@@ -113,7 +113,7 @@ function ProjectCard({ project, detailed }: { project: ProjectRow; detailed: boo
   const assessed = scan && detailed ? assessedWeight(scan.id) : undefined;
 
   return (
-    <Card as="li">
+    <Card as="div">
       <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.5rem 0.85rem', alignItems: 'baseline' }}>
         <h3 style={{ margin: 0, fontSize: '1.02rem', fontWeight: 650 }}>
           <Link href={href}>{project.name}</Link>
@@ -351,9 +351,18 @@ export default function DashboardPage() {
               </p>
             </EmptyState>
           ) : (
-            <ul style={{ listStyle: 'none', margin: 0, padding: 0, display: 'grid', gap: '0.85rem' }}>
+            {/*
+              A block list, not a grid. An auto-sized grid track takes its floor
+              from the widest item's min-content width, which lets the scorecard
+              table inside a card push the whole page into a horizontal scroll at
+              phone width. Block flow sizes from the container instead, so the
+              table scrolls inside its own container as intended.
+            */}
+            <ul style={{ listStyle: 'none', margin: 0, padding: 0 }}>
               {projects.map((p, i) => (
-                <ProjectCard key={p.id} project={p} detailed={i === 0} />
+                <li key={p.id} style={{ marginBottom: i === projects.length - 1 ? 0 : '0.85rem' }}>
+                  <ProjectCard project={p} detailed={i === 0} />
+                </li>
               ))}
             </ul>
           )}
