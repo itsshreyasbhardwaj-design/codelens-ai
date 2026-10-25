@@ -337,7 +337,12 @@ export default function DashboardPage() {
           <NewScan />
         </Card>
 
-        <section aria-labelledby="projects-heading">
+        {/*
+          minWidth 0: this section is a grid item of Shell, and without it the
+          scorecard table's min-content width raises the grid track above the
+          viewport, giving the whole page a horizontal scroll at phone width.
+        */}
+        <section aria-labelledby="projects-heading" style={{ minWidth: 0 }}>
           <SectionHeading id="projects-heading" hint="Most recently scanned first.">
             Projects
           </SectionHeading>

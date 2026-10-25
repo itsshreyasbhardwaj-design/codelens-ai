@@ -167,6 +167,29 @@ Not covered by automation:
   executed against a live endpoint, because that spends money. The `ollama`
   path and the `none` default are exercised.
 
+## Known false positive, found by self-audit
+
+Running CodeLens on CodeLens surfaced 111 findings. Ten reached P0; eight are in
+`fixtures/vulnerable-shop/`, the deliberately defective demo project, and are
+correct. **Two are false positives in this repository's own code**, and they are
+the worst kind this product can produce — `critical` severity at `confirmed`
+confidence:
+
+- `security.injection.sql` at `packages/web/app/lib/store.ts:292` and `:467`.
+
+Both interpolate `PRIORITY_ORDER`, a module-scope `const` holding a literal SQL
+`CASE` fragment, into an `ORDER BY`. No user input reaches either site; the bound
+values are passed as parameters. The rule flags any `${}` inside a query string
+without asking whether the interpolated expression is a compile-time constant.
+
+Interpolating a constant ordering fragment is a common and safe pattern, so this
+will fire on real codebases. **The fix is in the rule, not the code**: resolve
+each interpolated expression, and suppress the finding when every one of them is
+an identifier bound to a module-scope string literal. It is not yet implemented.
+
+Reported here rather than quietly silenced, because a tool that hides its own
+false positives has no standing to ask anyone to trust its findings.
+
 ## Known weaknesses
 
 - **Ground truth is one fixture.** Recall is measured against 69 documented

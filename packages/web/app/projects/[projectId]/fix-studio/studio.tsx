@@ -415,17 +415,26 @@ export function Studio({
   async function copyEveryPack(): Promise<void> {
     const note = `all ${packs.length} prompts`;
     setCopy({ kind: 'working', target: 'all', note });
-    const parts: string[] = [];
+
+    const wanted: Array<{ key: string; agentFormat: string }> = [];
+    for (const candidate of packs) {
+      const agentFormat: string | undefined = candidate.formats.includes(preferredFormat)
+        ? preferredFormat
+        : candidate.formats[0];
+      if (agentFormat === undefined) continue;
+      wanted.push({ key: candidate.key, agentFormat });
+    }
+
+    let parts: string[];
     try {
-      for (const candidate of packs) {
-        const candidateFormat: string | undefined = candidate.formats.includes(preferredFormat)
-          ? preferredFormat
-          : candidate.formats[0];
-        if (candidateFormat === undefined) continue;
-        parts.push((await loadPrompt(candidate.key, candidateFormat)).trim());
-      }
+      const loaded = await Promise.all(wanted.map((w) => loadPrompt(w.key, w.agentFormat)));
+      parts = loaded.map((text) => text.trim());
     } catch (error: unknown) {
-      setCopy({ kind: 'failed', target: 'all', note: error instanceof Error ? error.message : 'the prompts could not be loaded' });
+      setCopy({
+        kind: 'failed',
+        target: 'all',
+        note: `${error instanceof Error ? error.message : 'the prompts could not be loaded'} — reload the page and try again`,
+      });
       return;
     }
     if (parts.length === 0) {
@@ -666,8 +675,8 @@ export function Studio({
 
                 {prompt.state === 'error' ? (
                   <Caveat>
-                    The prompt for this pack could not be loaded ({prompt.message}). The download link below
-                    requests the same document directly.
+                    The prompt for this pack could not be loaded ({prompt.message}). Reload the page and try
+                    again; the download link below requests the same document directly.
                   </Caveat>
                 ) : null}
 
@@ -687,7 +696,7 @@ export function Studio({
                       {sections.map((s) => (
                         <div key={s.id} className="fs-prompt-section">
                           {s.heading ? (
-                            <h4 id={s.id} className="fs-prompt-heading">{s.heading}</h4>
+                            <h3 id={s.id} className="fs-prompt-heading">{s.heading}</h3>
                           ) : null}
                           {s.body ? <pre className="fs-prompt-body">{s.body}</pre> : null}
                         </div>
@@ -841,7 +850,12 @@ export function Studio({
                           <input
                             type="checkbox"
                             checked={checked[key] ?? false}
-                            onChange={(e) => setChecked((prior) => ({ ...prior, [key]: e.currentTarget.checked }))}
+                            onChange={(e) => {
+                              // Read the value now: React may run the updater
+                              // after the event has released currentTarget.
+                              const next = e.currentTarget.checked;
+                              setChecked((prior) => ({ ...prior, [key]: next }));
+                            }}
                           />
                           <span data-done={checked[key] ? 'true' : undefined}>{step}</span>
                         </label>
