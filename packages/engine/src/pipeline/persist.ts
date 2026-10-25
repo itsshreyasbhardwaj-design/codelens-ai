@@ -339,13 +339,25 @@ export function loadScanSide(db: Db, scanId: string): ScanSide | undefined {
     ? Math.round(graded.reduce((sum, s) => sum + (s.score as number) * s.weight, 0) / assessedWeight)
     : null;
 
-  // Fingerprints resolved in any earlier scan of this project, for regression detection.
-  const previouslyResolved = new Set(
+  // Every path this scan indexed, so a comparison can tell "fixed" from
+  // "no longer looked at" per finding rather than per file count.
+  const indexedFiles = new Set(
+    scan.snapshot_id
+      ? db.all<{ path: string }>('SELECT path FROM project_files WHERE snapshot_id = ?', scan.snapshot_id)
+          .map((r) => r.path)
+      : [],
+  );
+
+  // Fingerprints observed in scans strictly older than this one. Ordering is by
+  // queued_at, which is what makes "came back" distinguishable from "is new".
+  const fingerprintsBeforeThisScan = new Set(
     db.all<{ fingerprint: string }>(
-      `SELECT DISTINCT o.fingerprint FROM finding_occurrences o
-        WHERE o.project_id = ? AND o.scan_id != ?
-          AND NOT EXISTS (SELECT 1 FROM diagnostic_findings d WHERE d.scan_id = ? AND d.fingerprint = o.fingerprint)`,
-      scan.project_id, scanId, scanId,
+      `SELECT DISTINCT o.fingerprint
+         FROM finding_occurrences o
+         JOIN scan_jobs s ON s.id = o.scan_id
+        WHERE o.project_id = ?
+          AND s.queued_at < (SELECT queued_at FROM scan_jobs WHERE id = ?)`,
+      scan.project_id, scanId,
     ).map((r) => r.fingerprint),
   );
 
@@ -354,7 +366,8 @@ export function loadScanSide(db: Db, scanId: string): ScanSide | undefined {
     findings,
     coverage,
     contentHash: snapshot?.content_hash ?? '',
-    previouslyResolved,
+    indexedFiles: indexedFiles.size > 0 ? indexedFiles : undefined,
+    fingerprintsBeforeThisScan,
     scorecard: scoreRows.length
       ? ({ overall, overallGrade: overall === null ? 'insufficient_evidence' : 'B', dimensions: [], assessedWeight, criticalCount: 0, unassessedDimensions: [], rules: {} } as unknown as Scorecard)
       : undefined,

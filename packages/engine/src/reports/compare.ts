@@ -19,6 +19,8 @@ export type ChangeKind =
   | 'resolved'              // gone, and the newer scan covered the same ground
   | 'unverified_absence'    // gone, but coverage changed, so not proven fixed
   | 'persistent'            // present in both
+  | 'relocated'             // same rule and file, different fingerprint: the code
+                            // changed but the problem did not go away
   | 'new'                   // only in the newer scan
   | 'regressed'             // resolved in an earlier scan, present again now
   | 'severity_increased'
@@ -47,6 +49,12 @@ export interface ScanComparison {
   resolved: FindingChange[];
   unverifiedAbsences: FindingChange[];
   persistent: FindingChange[];
+  /**
+   * The same rule firing on the same file under a new fingerprint. The edited
+   * line changed the content hash, but the problem is still there — counting
+   * these as resolved would report progress that did not happen.
+   */
+  relocated: FindingChange[];
   introduced: FindingChange[];
   regressed: FindingChange[];
   severityChanges: FindingChange[];
@@ -80,8 +88,17 @@ export interface ScanSide {
   scorecard?: Scorecard;
   /** Content hash of the analysed file set. */
   contentHash: string;
-  /** Fingerprints resolved in scans before this one, for regression detection. */
-  previouslyResolved?: Set<string>;
+  /**
+   * Every path this scan indexed. Used to decide precisely whether a finding's
+   * own file was still looked at, instead of inferring it from a file count.
+   */
+  indexedFiles?: Set<string>;
+  /**
+   * Fingerprints observed in scans strictly OLDER than this one. A finding
+   * present now, absent in the comparison base, and present in this set has
+   * come back: that is a regression.
+   */
+  fingerprintsBeforeThisScan?: Set<string>;
 }
 
 const SEVERITY_RANK: Record<Severity, number> = { critical: 0, high: 1, medium: 2, low: 3, info: 4 };
@@ -164,24 +181,60 @@ function buildComparison(
 
   for (const [fp, after] of headByFp) {
     if (baseByFp.has(fp)) continue;
-    if (head.previouslyResolved?.has(fp) || base.previouslyResolved?.has(fp)) {
+    // A regression is specifically: seen before the base, gone in the base,
+    // back now. Checking the base's own "seen in other scans" set would match
+    // every head-only finding by construction, since the head IS one of those
+    // other scans — which reported ordinary new findings as regressions.
+    const seenBeforeBase = base.fingerprintsBeforeThisScan?.has(fp) ?? false;
+    if (seenBeforeBase) {
       regressed.push(toChange(after, 'regressed'));
     } else {
       introduced.push(toChange(after, 'new'));
     }
   }
 
+  // A finding whose code was edited gets a new fingerprint, because the
+  // fingerprint deliberately includes the source excerpt so two different
+  // problems from one rule in one file stay distinct. The cost is that an edit
+  // which does not actually fix the problem looks like "one resolved, one new".
+  // Pair those back up so the counts tell the truth.
+  const relocated: FindingChange[] = [];
+  const resolvedById = new Map(resolved.map((c) => [c.fingerprint, c]));
+  for (const intro of [...introduced]) {
+    const after = headByFp.get(intro.fingerprint);
+    if (!after) continue;
+    const match = resolved.find((r) => {
+      const before = baseByFp.get(r.fingerprint);
+      if (!before) return false;
+      if (before.ruleId !== after.ruleId) return false;
+      return before.files.some((p) => after.files.includes(p));
+    });
+    if (!match) continue;
+
+    relocated.push({
+      ...intro,
+      kind: 'relocated',
+      caveat:
+        `the same rule still fires on ${after.files[0]}; the edited source changed the finding's ` +
+        'fingerprint, so this is the same problem in modified code rather than a fix',
+    });
+    introduced.splice(introduced.indexOf(intro), 1);
+    const i = resolved.indexOf(match);
+    if (i !== -1) resolved.splice(i, 1);
+    resolvedById.delete(match.fingerprint);
+  }
+
   const scoreDelta = buildScoreDelta(base, head);
 
   const summary = buildSummary({
-    resolved, unverifiedAbsences, persistent, introduced, regressed, coverageDelta, scoreDelta,
+    resolved, unverifiedAbsences, persistent, relocated, introduced, regressed, coverageDelta, scoreDelta,
   });
 
   return {
     comparable,
     baseScanId: base.scanId,
     headScanId: head.scanId,
-    resolved, unverifiedAbsences, persistent, introduced, regressed, severityChanges,
+    resolved, unverifiedAbsences, persistent, relocated, introduced, regressed, severityChanges,
     coverageDelta,
     scoreDelta,
     summary,
@@ -209,9 +262,25 @@ function absenceCaveat(
     return `the '${needed}' analyzer did not run in the newer scan${skip ? ` (${skip.reason})` : ''}, so this finding could not have been reported either way`;
   }
 
-  // 2. The file it was found in is no longer indexed or parsed.
-  if (f.files.length > 0 && delta.filesIndexed < 0) {
-    return `the newer scan indexed ${Math.abs(delta.filesIndexed)} fewer file(s); confirm '${f.files[0]}' is still part of the project rather than merely excluded`;
+  // 2. The specific file the finding was in is no longer indexed.
+  //
+  // This has to be precise. An earlier version compared total file counts, so
+  // deleting any two files made every other fix in the scan "unverifiable" —
+  // including fixes whose own files were read perfectly well. A caveat that
+  // fires on unrelated changes trains people to ignore it, which defeats the
+  // point of having one.
+  if (head.indexedFiles && f.files.length > 0) {
+    const missing = f.files.filter((p) => !head.indexedFiles!.has(p));
+    if (missing.length === f.files.length) {
+      return `none of this finding's file(s) (${f.files.join(', ')}) were indexed by the newer scan, so its absence may mean the code was removed or excluded rather than fixed`;
+    }
+    if (missing.length > 0) {
+      return `${missing.join(', ')} was not indexed by the newer scan, so part of the evidence for this finding could not be re-examined`;
+    }
+  } else if (!head.indexedFiles && f.files.length > 0 && delta.filesIndexed < 0) {
+    // No file list available (an older stored scan): fall back to the coarse
+    // signal, and say that it is coarse.
+    return `the newer scan indexed ${Math.abs(delta.filesIndexed)} fewer file(s) and its file list is unavailable, so '${f.files[0]}' could not be confirmed as still present`;
   }
 
   // 3. The layer that produced it was not completed.
@@ -258,18 +327,25 @@ function buildSummary(input: {
   resolved: FindingChange[];
   unverifiedAbsences: FindingChange[];
   persistent: FindingChange[];
+  relocated: FindingChange[];
   introduced: FindingChange[];
   regressed: FindingChange[];
   coverageDelta: ScanComparison['coverageDelta'];
   scoreDelta: ScanComparison['scoreDelta'];
 }): string {
   const parts: string[] = [];
-  const { resolved, unverifiedAbsences, persistent, introduced, regressed, coverageDelta, scoreDelta } = input;
+  const { resolved, unverifiedAbsences, persistent, relocated, introduced, regressed, coverageDelta, scoreDelta } = input;
 
   parts.push(
-    `${resolved.length} finding(s) verified as resolved, ${persistent.length} still present, ` +
+    `${resolved.length} finding(s) verified as resolved, ${persistent.length + relocated.length} still present, ` +
     `${introduced.length} newly reported.`,
   );
+  if (relocated.length > 0) {
+    parts.push(
+      `${relocated.length} of those still-present finding(s) sit in code that was edited: the same rule fires on ` +
+      'the same file, so the change did not remove the problem.',
+    );
+  }
   if (regressed.length > 0) {
     parts.push(`${regressed.length} previously resolved finding(s) have returned.`);
   }

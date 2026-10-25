@@ -347,6 +347,13 @@ function cmdCompare(args: Args): number {
         console.log(`      ${c.caveat}`);
       }
     }
+    if (cmp.relocated.length > 0) {
+      console.log('\nStill present, in edited code — NOT fixed:');
+      for (const c of cmp.relocated) {
+        console.log(`  [${c.severity}] ${c.title}`);
+        console.log(`      ${c.caveat}`);
+      }
+    }
     if (cmp.regressed.length > 0) {
       console.log('\nRegressed (previously resolved, present again):');
       for (const c of cmp.regressed) console.log(`  [${c.severity}] ${c.title}`);

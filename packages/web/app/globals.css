@@ -1,0 +1,155 @@
+@import "tailwindcss";
+
+/*
+ * Design tokens.
+ *
+ * One palette, defined once, redefined for dark mode. Severity colours are
+ * chosen to hold a 4.5:1 contrast ratio against their own surface in both
+ * themes — a diagnostic tool that fails its own accessibility audit has no
+ * standing to report accessibility findings.
+ */
+@theme {
+  --font-sans: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  --font-mono: ui-monospace, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace;
+}
+
+:root {
+  --bg: #fbfbfc;
+  --surface: #ffffff;
+  --surface-2: #f4f5f7;
+  --surface-3: #eceef1;
+  --border: #dfe2e7;
+  --border-strong: #c6cad2;
+  --ink: #15171c;
+  --ink-2: #3f454f;
+  --ink-3: #6b7280;
+  --accent: #1f4ed8;
+  --accent-ink: #ffffff;
+  --accent-soft: #e8edfd;
+
+  --critical: #a4133c;
+  --critical-soft: #fdeaef;
+  --high: #a8550d;
+  --high-soft: #fdf0e3;
+  --medium: #7a6412;
+  --medium-soft: #fbf5df;
+  --low: #2c5f8a;
+  --low-soft: #e8f1f8;
+  --info: #5c6370;
+  --info-soft: #f0f1f4;
+  --good: #176b45;
+  --good-soft: #e6f4ed;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #0e1014;
+    --surface: #161920;
+    --surface-2: #1d212a;
+    --surface-3: #252a35;
+    --border: #2b313c;
+    --border-strong: #3c4453;
+    --ink: #eef0f4;
+    --ink-2: #c0c6d1;
+    --ink-3: #8b93a1;
+    --accent: #7d9bff;
+    --accent-ink: #0e1014;
+    --accent-soft: #1b2440;
+
+    --critical: #ff8097;
+    --critical-soft: #3a1420;
+    --high: #f0a868;
+    --high-soft: #35220f;
+    --medium: #dcc26a;
+    --medium-soft: #2e2810;
+    --low: #86b9e8;
+    --low-soft: #11263a;
+    --info: #9aa2b1;
+    --info-soft: #1f232c;
+    --good: #6cc49a;
+    --good-soft: #0f2a1e;
+  }
+}
+
+:root[data-theme="dark"] {
+  --bg: #0e1014;
+  --surface: #161920;
+  --surface-2: #1d212a;
+  --surface-3: #252a35;
+  --border: #2b313c;
+  --border-strong: #3c4453;
+  --ink: #eef0f4;
+  --ink-2: #c0c6d1;
+  --ink-3: #8b93a1;
+  --accent: #7d9bff;
+  --accent-ink: #0e1014;
+  --accent-soft: #1b2440;
+
+  --critical: #ff8097;
+  --critical-soft: #3a1420;
+  --high: #f0a868;
+  --high-soft: #35220f;
+  --medium: #dcc26a;
+  --medium-soft: #2e2810;
+  --low: #86b9e8;
+  --low-soft: #11263a;
+  --info: #9aa2b1;
+  --info-soft: #1f232c;
+  --good: #6cc49a;
+  --good-soft: #0f2a1e;
+}
+
+* { box-sizing: border-box; }
+
+html { color-scheme: light dark; }
+:root[data-theme="light"] { color-scheme: light; }
+:root[data-theme="dark"] { color-scheme: dark; }
+
+body {
+  background: var(--bg);
+  color: var(--ink);
+  font-family: var(--font-sans);
+  -webkit-font-smoothing: antialiased;
+  margin: 0;
+  font-size: 15px;
+  line-height: 1.6;
+}
+
+/* Visible, consistent focus for keyboard users. */
+:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+  border-radius: 3px;
+}
+
+a { color: var(--accent); text-decoration-thickness: 1px; text-underline-offset: 2px; }
+
+::selection { background: var(--accent-soft); color: var(--ink); }
+
+/* Honour a user's reduced-motion preference everywhere. */
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}
+
+/* Skeleton loading, used while a scan streams. */
+@keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.45; } }
+.skeleton {
+  background: var(--surface-3);
+  border-radius: 4px;
+  animation: pulse 1.6s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+}
+
+.sr-only {
+  position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px;
+  overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border-width: 0;
+}
+
+.skip-link:focus {
+  left: 0.75rem !important;
+  top: 0.75rem !important;
+}

@@ -80,13 +80,58 @@ export interface EvalResult {
 }
 
 /**
- * A finding addresses a ground-truth item when the category agrees and the
- * finding points at the same file, either through `files` or any evidence entry.
+ * Does this finding point at the same place as the ground-truth item?
+ *
+ * Category and file must agree. The file may be named either in `files` or in
+ * any evidence entry, because a cross-file finding legitimately cites a second
+ * location.
  */
 function addresses(finding: Finding, item: GroundTruthItem): boolean {
   if (finding.category !== item.category) return false;
   if (finding.files.includes(item.file)) return true;
   return finding.evidence.some((e) => e.file === item.file);
+}
+
+const STOPWORDS = new Set([
+  'the', 'a', 'an', 'is', 'are', 'was', 'were', 'and', 'or', 'but', 'not', 'no',
+  'in', 'on', 'at', 'to', 'of', 'for', 'with', 'without', 'from', 'by', 'into',
+  'it', 'its', 'this', 'that', 'there', 'then', 'than', 'so', 'as', 'be', 'been',
+]);
+
+function keywords(text: string): Set<string> {
+  return new Set(
+    text
+      .toLowerCase()
+      .replace(/([a-z0-9])([A-Z])/g, '$1 $2')
+      .split(/[^a-z0-9]+/)
+      .filter((w) => w.length > 2 && !STOPWORDS.has(w)),
+  );
+}
+
+/**
+ * How well a finding matches a specific ground-truth item, beyond sharing a file.
+ *
+ * Several findings commonly share one file — an endpoint can have an
+ * authorisation gap, a missing null check, and no rate limiting at once. Matching
+ * on (category, file) alone then pairs the item with whichever finding happens to
+ * come first, which leaves the genuinely corresponding finding in the "unmatched"
+ * list and makes the precision figure look worse than it is.
+ *
+ * So candidates are ranked by keyword overlap between the item's key and
+ * description and the finding's rule id and title. The score only ever reorders
+ * candidates that already share a category and a file, so it cannot manufacture
+ * a match that does not exist.
+ */
+function matchScore(finding: Finding, item: GroundTruthItem): number {
+  const want = keywords(`${item.key} ${item.description}`);
+  const have = keywords(`${finding.ruleId} ${finding.title}`);
+  let shared = 0;
+  for (const w of want) if (have.has(w)) shared++;
+  // Normalise by the item's own keyword count so a verbose finding is not favoured.
+  const overlap = want.size === 0 ? 0 : shared / want.size;
+  // A severity agreement is weak corroboration, worth a nudge only.
+  const severityBonus = item.severity && finding.severity === item.severity ? 0.05 : 0;
+  return overlap + severityBonus;
 }
 
 export function evaluate(findings: Finding[], gt: GroundTruth): EvalResult {
@@ -97,15 +142,33 @@ export function evaluate(findings: Finding[], gt: GroundTruth): EvalResult {
   // Each ground-truth item is satisfied by at most one finding, and each finding
   // can satisfy at most one item, so two findings for the same defect do not
   // inflate recall.
-  for (const item of gt.expected) {
-    const hit = findings.find((f) => !usedFindings.has(f) && addresses(f, item));
+  //
+  // Items are matched in order of how confidently they can be paired: an item
+  // with a strong, unambiguous candidate claims it before a vaguer item can take
+  // it by position alone.
+  const ranked = gt.expected
+    .map((item) => {
+      const candidates = findings
+        .filter((f) => addresses(f, item))
+        .map((f) => ({ finding: f, score: matchScore(f, item) }))
+        .sort((a, b) => b.score - a.score);
+      return { item, candidates, best: candidates[0]?.score ?? -1 };
+    })
+    .sort((a, b) => b.best - a.best);
+
+  for (const { item, candidates } of ranked) {
+    const hit = candidates.find((c) => !usedFindings.has(c.finding));
     if (hit) {
-      usedFindings.add(hit);
-      matched.push({ item, finding: hit });
+      usedFindings.add(hit.finding);
+      matched.push({ item, finding: hit.finding });
     } else {
       missed.push(item);
     }
   }
+  // Restore ground-truth order for stable, readable output.
+  const order = new Map(gt.expected.map((e, i) => [e.key, i]));
+  matched.sort((a, b) => (order.get(a.item.key) ?? 0) - (order.get(b.item.key) ?? 0));
+  missed.sort((a, b) => (order.get(a.key) ?? 0) - (order.get(b.key) ?? 0));
 
   const unmatched = findings.filter((f) => !usedFindings.has(f));
 

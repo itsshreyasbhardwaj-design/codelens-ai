@@ -387,14 +387,27 @@ function tokenise(source: string): string[] {
   return source.match(/[A-Za-z_$][\w$]*|\d+(?:\.\d+)?|[^\s\w]/g) ?? [];
 }
 
-/** The body of a symbol, with its declaration and name removed. */
+/**
+ * The body of a symbol, with its declaration and name removed.
+ *
+ * The declaration is dropped deliberately: comparing whole symbols would make
+ * two exact copies under different names look like a drifted pair, which is the
+ * distinction this analyzer exists to draw.
+ */
 function bodyOf(source: string, startLine: number): { text: string; startLine: number } | undefined {
   const brace = source.indexOf('{');
   const arrow = source.indexOf('=>');
   let cut = -1;
   if (brace !== -1 && (arrow === -1 || brace < arrow + 4)) cut = brace;
   else if (arrow !== -1) cut = arrow + 2;
-  if (cut === -1) return undefined;
+  if (cut === -1) {
+    // Indentation-delimited languages: the body is what follows a header line
+    // ending in a colon.
+    const firstBreak = source.indexOf('\n');
+    if (firstBreak === -1) return undefined;
+    if (!/:\s*$/.test(source.slice(0, firstBreak))) return undefined;
+    return { text: source.slice(firstBreak + 1), startLine: startLine + 1 };
+  }
   const text = source.slice(cut);
   const consumedNewlines = (source.slice(0, cut).match(/\n/g) ?? []).length;
   return { text, startLine: startLine + consumedNewlines };
@@ -568,12 +581,22 @@ function classifyPair(pair: DupPair): DupVerdict {
 
 /** Whether a difference changes behaviour rather than only which name is used. */
 function differenceLooksBehavioural(aText: string, bText: string): boolean {
-  const numbers = (s: string): string[] => s.match(/\d+(?:\.\d+)?/g) ?? [];
+  // A digit inside an identifier (VALUE_1, sha256) is not a literal: counting
+  // it as one would report a renamed copy as a drifted one.
+  const numbers = (s: string): string[] => s.match(/(?<![\w$])\d+(?:\.\d+)?/g) ?? [];
   if (numbers(aText).join(',') !== numbers(bText).join(',')) return true;
   const ops = (s: string): string[] => s.match(/===|!==|==|!=|>=|<=|[<>+\-*/%]|&&|\|\||\?\?|!/g) ?? [];
   if (ops(aText).join(',') !== ops(bText).join(',')) return true;
   const strings = (s: string): string[] => s.match(/'[^']*'|"[^"]*"|`[^`]*`/g) ?? [];
   return strings(aText).join(',') !== strings(bText).join(',');
+}
+
+/** A title fragment that stays readable when both copies share a name. */
+function pairLabel(a: DupCandidate, b: DupCandidate): string {
+  const base = (path: string): string => path.slice(path.lastIndexOf('/') + 1);
+  if (a.symbol.name !== b.symbol.name) return `${a.symbol.name}() and ${b.symbol.name}()`;
+  if (a.path !== b.path) return `${a.symbol.name}() in ${base(a.path)} and in ${base(b.path)}`;
+  return `two copies of ${a.symbol.name}() in ${base(a.path)}`;
 }
 
 function divergentDuplicateFinding(ctx: AnalyzerContext, pair: DupPair, verdict: DupVerdict): Finding | undefined {
@@ -606,7 +629,7 @@ function divergentDuplicateFinding(ctx: AnalyzerContext, pair: DupPair, verdict:
 
   return ctx.finding({
     ruleId: 'quality.duplication.divergent_logic',
-    title: `${a.symbol.name}() and ${b.symbol.name}() are near-duplicates that have already drifted apart`,
+    title: `${pairLabel(a, b)}: near-duplicate logic that has already drifted apart`,
     severity: structural ? 'medium' : 'high',
     confidence: structural ? 'moderate' : 'strong',
     status: structural ? 'suspected' : undefined,
@@ -624,7 +647,10 @@ function divergentDuplicateFinding(ctx: AnalyzerContext, pair: DupPair, verdict:
       complete: true,
     },
     explanation:
-      `${a.symbol.name}() in ${a.path} and ${b.symbol.name}() in ${b.path} implement the same rule twice. After stripping comments ` +
+      (sameFile
+        ? `${a.symbol.name}() and ${b.symbol.name}(), both in ${a.path}, implement the same rule twice. `
+        : `${a.symbol.name}() in ${a.path} and ${b.symbol.name}() in ${b.path} implement the same rule twice. `) +
+      `After stripping comments ` +
       `and normalising whitespace, their bodies are ${pct}% identical as token sequences — close enough that one was copied from the ` +
       `other, and not identical. ${divergenceSentence} ` +
       (structural
@@ -649,13 +675,17 @@ function divergentDuplicateFinding(ctx: AnalyzerContext, pair: DupPair, verdict:
     ],
     remediation:
       'Decide which behaviour is correct — the two cannot both be — then keep exactly one implementation and have the other call site ' +
-      'use it. Put the surviving function where both callers can import it (a shared module, rather than one of these two files ' +
-      'importing the other) and delete the copy. Before deleting, write a test for each input where the two disagreed, pinning the ' +
+      'use it. ' +
+      (sameFile
+        ? 'Keep the surviving function in this file and delete the other. '
+        : 'Put the surviving function where both callers can import it — a shared module, rather than one of these two files importing ' +
+          'the other — and delete the copy. ') +
+      'Before deleting, write a test for each input where the two disagreed, pinning the ' +
       'intended answer, so the behaviour change on the losing call path is deliberate and visible in the diff instead of a side effect ' +
       'of the refactor.',
     effort: 'small',
     verificationSteps: [
-      `Confirm one definition of this logic remains and that both ${a.symbol.name}() and ${b.symbol.name}() call sites resolve to it.`,
+      `Confirm one definition of this logic remains and that every call site of ${a.symbol.name}() and ${b.symbol.name}() resolves to it.`,
       diff
         ? `Add a test for the input that distinguished the copies (${a.path}:${diff.aLine} versus ${b.path}:${diff.bLine}) and assert the intended result.`
         : 'Add tests covering the inputs where the two implementations disagree, including the statement present in only one of them.',
@@ -683,8 +713,8 @@ function clonedBodyFinding(ctx: AnalyzerContext, pair: DupPair, verdict: DupVerd
   return ctx.finding({
     ruleId: 'quality.duplication.identical_logic',
     title: renamed
-      ? `${a.symbol.name}() and ${b.symbol.name}() are the same body with a different binding substituted`
-      : `${a.symbol.name}() and ${b.symbol.name}() have equivalent bodies`,
+      ? `${pairLabel(a, b)}: the same body with a different binding substituted`
+      : `${pairLabel(a, b)}: equivalent bodies`,
     severity: 'low',
     confidence: 'strong',
     detectionSource: sameFile ? 'static' : 'graph',
@@ -700,7 +730,9 @@ function clonedBodyFinding(ctx: AnalyzerContext, pair: DupPair, verdict: DupVerd
       complete: true,
     },
     explanation:
-      `${a.symbol.name}() in ${a.path} and ${b.symbol.name}() in ${b.path} have the same body after comments and whitespace are ` +
+      (sameFile
+        ? `${a.symbol.name}() and ${b.symbol.name}(), both in ${a.path}, have the same body after comments and whitespace are `
+        : `${a.symbol.name}() in ${a.path} and ${b.symbol.name}() in ${b.path} have the same body after comments and whitespace are `) +
       `removed (${a.tokens.length} tokens each)` +
       (renamed && diff
         ? `, differing only in which binding is named — ${a.path}:${diff.aLine} reads \`${diff.aText}\` where ${b.path}:${diff.bLine} ` +
@@ -869,9 +901,7 @@ function valueEdges(map: RepoMap, idx: QIndex): Edge[] {
       if (imp.resolvedPath === mod.path) continue;
       // `import type` is erased at compile time, so a cycle made only of type
       // imports is not a cycle at runtime and must not be reported as one.
-      const lineText = lines[imp.line - 1] ?? '';
-      if (/\bimport\s+type\b/.test(lineText)) continue;
-      if (/\bexport\s+type\b/.test(lineText)) continue;
+      if (isTypeOnlyImport(lines, imp.line)) continue;
       out.push({ from: mod.path, to: imp.resolvedPath, line: imp.line, specifier: imp.specifier });
     }
   }
@@ -919,6 +949,30 @@ function findCycles(edges: Edge[]): Edge[][] {
     if ((state.get(node) ?? 0) === 0) visit(node);
   }
   return cycles;
+}
+
+/**
+ * Whether the import statement starting at `line` is erased at compile time.
+ *
+ * Both spellings matter: `import type { A } from …` and the per-specifier
+ * `import { type A, type B } from …`. Treating an erased import as a runtime
+ * edge would report a type-only loop as a dependency cycle, which is the one
+ * false positive this rule can plausibly produce.
+ */
+function isTypeOnlyImport(lines: string[], line: number): boolean {
+  let statement = '';
+  for (let i = line - 1; i < lines.length && i < line + 29; i++) {
+    statement += (lines[i] ?? '') + ' ';
+    if (/\bfrom\b/.test(statement)) break;
+  }
+  if (/\b(?:import|export)\s+type\b/.test(statement)) return true;
+  const braces = /\{([^}]*)\}/.exec(statement);
+  if (!braces) return false;
+  const specifiers = braces[1]!.split(',').map((x) => x.trim()).filter((x) => x.length > 0);
+  if (specifiers.length === 0) return false;
+  // A default or namespace binding outside the braces is a value import.
+  if (/\b(?:import|export)\s+(?:[\w$]+\s*,|\*)/.test(statement)) return false;
+  return specifiers.every((x) => /^type\s/.test(x));
 }
 
 function dependencyCycles(ctx: AnalyzerContext, idx: QIndex): Finding[] {
@@ -1631,6 +1685,9 @@ function typeSafety(ctx: AnalyzerContext, idx: QIndex): Finding[] {
   // --- strict mode disabled in a TypeScript project
   for (const f of map.files) {
     if (!/(^|\/)tsconfig(?:\.[\w.-]+)?\.json$/.test(f.path) || !f.text) continue;
+    // A configuration under a fixture or test tree is test data, not the
+    // project's build setup.
+    if (isTestLike(map, f.path)) continue;
     const config = parseLooseJson(f.text);
     if (!config || typeof config !== 'object') continue;
     const options = (config as Record<string, unknown>).compilerOptions;
@@ -1734,10 +1791,13 @@ function typeSafety(ctx: AnalyzerContext, idx: QIndex): Finding[] {
         title: `\`any\` is used ${total} times across ${perFile.length} files, averaging ${perFileAvg} per TypeScript file`,
         severity: 'medium',
         confidence: 'strong',
-        files: perFile.slice(0, 6).map((f) => f.path),
+        // Anchored to the heaviest file: this is an aggregate measurement, not a
+        // traced relationship, so it must not present itself as a cross-file finding.
+        files: [perFile[0]!.path],
         evidence: ev,
         explanation:
           `There are ${total} explicit \`any\` annotations in ${perFile.length} of ${tsFiles.length} TypeScript source files ` +
+          `(heaviest: ${perFile.slice(0, 3).map((f) => `${f.path} with ${f.count}`).join(', ')}) ` +
           `(${perFileAvg} per file on average), counted from comment-stripped source. \`any\` is not a weaker type; it switches ` +
           'checking off. Every value that flows out of one of these positions is unchecked, as is every expression derived from it, so ' +
           'a misspelled property or a changed shape produces no error at the point of use and no error anywhere downstream. At this ' +

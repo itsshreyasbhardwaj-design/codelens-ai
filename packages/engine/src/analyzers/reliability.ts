@@ -104,7 +104,10 @@ function statementTextAt(fl: FileLines, line: number, maxLines = 24): string {
     if (!continues) break;
     text += `\n${next}`;
     balance += bracketBalance(next);
-    if (balance <= 0 && /[;)]\s*$/.test(trimmed)) break;
+    // Only a statement terminator ends the scan. Breaking on a closing paren
+    // would stop at the first `.then(…)` line and miss the `.catch` below it,
+    // which is where almost every correctly handled chain puts it.
+    if (balance <= 0 && /;\s*$/.test(trimmed)) break;
   }
   return text;
 }
@@ -382,6 +385,7 @@ function frontendBackendContractBreaks(c: Ctx): Finding[] {
       if (!route.responseShape) continue;
       const sent = new Set(route.responseShape.split(',').map((k) => k.trim()).filter(Boolean));
       if (sent.size === 0) continue;
+      const sentList = [...sent].join(', ');
 
       const handler = handlerOf(map, route);
       if (!handler) continue;
@@ -447,7 +451,7 @@ function frontendBackendContractBreaks(c: Ctx): Finding[] {
               map.evidenceLine(mod.path, shape.line,
                 `${shape.typeName} declares ${field} as a non-optional member of that response`),
               map.evidenceLine(route.file, responseLine,
-                `the handler responds with { ${route.responseShape} } — ${field} is not among the keys`),
+                `the handler responds with { ${sentList} } — ${field} is not among the keys`),
               map.evidenceLine(mod.path, call.line,
                 `client call that fetches ${route.method} ${route.path}`),
             ];
@@ -458,7 +462,7 @@ function frontendBackendContractBreaks(c: Ctx): Finding[] {
                 { file: mod.path, symbol: shape.typeName, line: shape.line, detail: `declares the response as { ${shape.keys.join(', ')} }` },
                 { file: mod.path, symbol: enclosingSymbol(mod, call.line)?.name, line: call.line, detail: `calls ${route.method} ${route.path}` },
                 { file: mod.path, symbol: enclosingSymbol(mod, readLine)?.name, line: readLine, detail: `reads ${root}.${field} from the parsed response` },
-                { file: route.file, symbol: route.handlerSymbol, line: responseLine, detail: `handler returns { ${route.responseShape} }, without ${field}` },
+                { file: route.file, symbol: route.handlerSymbol, line: responseLine, detail: `handler returns { ${sentList} }, without ${field}` },
               ],
               complete: methodResolved,
             };
@@ -478,7 +482,7 @@ function frontendBackendContractBreaks(c: Ctx): Finding[] {
               explanation:
                 `${mod.path} declares the response of ${route.method} ${route.path} as ${shape.typeName}, which includes `
                 + `a required member \`${field}\`, and reads \`${root}.${field}\` at line ${readLine}. The handler in ${route.file} `
-                + `responds with an object literal whose keys are { ${route.responseShape} }. \`${field}\` is never serialised, so at `
+                + `responds with an object literal whose keys are { ${sentList} }. \`${field}\` is never serialised, so at `
                 + `runtime the property is \`undefined\` — the declared type says otherwise, and because the type is a compile-time `
                 + `assertion about data that crosses a network boundary, the compiler cannot catch the disagreement. `
                 + `No single file shows this: the declaration and the read are in the component, the omission is in the handler.`,
@@ -626,8 +630,49 @@ function hasGlobalRejectionHandler(map: RepoMap): boolean {
 
 // ----------------------------------------------------- 3. floating promises ---
 
-const ASYNC_IO_CALLEE_RE =
-  /(?:^|\.)(?:fetch|findMany|findUnique|findFirst|create|createMany|update|updateMany|upsert|delete|deleteMany|save|insert|execute|executemany|writeFile|readFile|appendFile|sendMail|sendEmail|publish|enqueue|dispatchEvent)$/;
+/**
+ * Callee shapes that are asynchronous whatever they are called on.
+ *
+ * Deliberately short. Names like `update`, `create`, `save`, `delete`, and
+ * `execute` are method names on plenty of synchronous objects — a crypto hash,
+ * a map, a builder — so matching them by name alone reports working code as
+ * broken. The looser ORM shapes are admitted only when the accessor resolves to
+ * a model this map actually knows about.
+ */
+const UNAMBIGUOUS_ASYNC_RE =
+  /^fetch$|(?:^|\.)(?:writeFile|readFile|appendFile|sendMail|sendEmail|sendEmailWithTemplate)$/;
+
+const ORM_METHOD_RE =
+  /^(?:\w+\.)?(\w+)\.(findMany|findUnique|findFirst|create|createMany|update|updateMany|upsert|delete|deleteMany|save|insert|count|aggregate)$/;
+
+/** Why this call is believed to return a promise, or undefined when it is not. */
+function asyncReason(c: Ctx, mod: ParsedModule, callee: string): string | undefined {
+  const { map } = c;
+  const localAsync = mod.symbols.find((s) => s.name === callee && s.async);
+  if (localAsync) return `${callee} is declared \`async\` in this module`;
+
+  const importedFrom = importedAsyncSymbol(map, mod, callee);
+  if (importedFrom) return `${callee} is declared \`async\` in ${importedFrom}`;
+
+  if (UNAMBIGUOUS_ASYNC_RE.test(callee)) return `${callee} is an asynchronous I/O call`;
+
+  // prisma.order.update(…) — only when `order` is a model in this repository.
+  const orm = ORM_METHOD_RE.exec(callee);
+  if (orm) {
+    const model = modelFor(map.models, orm[1]!);
+    if (model) return `${callee} is a query against the ${model.name} model`;
+  }
+
+  // A call on a binding imported from an I/O SDK.
+  const root = callee.split('.')[0] ?? '';
+  if (root && callee.includes('.')) {
+    const sdk = mod.imports.find(
+      (imp) => imp.external && IO_SDK_PACKAGE_RE.test(imp.specifier) && imp.names.includes(root),
+    );
+    if (sdk) return `${root} is a client imported from '${sdk.specifier}'`;
+  }
+  return undefined;
+}
 
 function floatingPromises(c: Ctx): Finding[] {
   const { ctx, map } = c;
@@ -643,10 +688,9 @@ function floatingPromises(c: Ctx): Finding[] {
       if (leaf === 'then' || leaf === 'catch' || leaf === 'finally') continue;
 
       // Why we believe this call returns a promise.
-      const localAsync = mod.symbols.find((s) => s.name === call.callee && s.async);
-      const importedAsync = !localAsync ? importedAsyncSymbol(map, mod, call.callee) : undefined;
-      const patternAsync = ASYNC_IO_CALLEE_RE.test(call.callee);
-      if (!localAsync && !importedAsync && !patternAsync) continue;
+      const source = asyncReason(c, mod, call.callee);
+      if (!source) continue;
+      const declaredAsync = source.includes('`async`');
 
       const head = codeAt(fl, call.line).trim();
       const root = call.callee.split('.')[0] ?? '';
@@ -657,12 +701,7 @@ function floatingPromises(c: Ctx): Finding[] {
       if (/\.\s*(?:then|catch|finally)\s*\(/.test(statement)) continue;
 
       const symbol = enclosingSymbol(mod, call.line);
-      const source = localAsync
-        ? `${call.callee} is declared \`async\` in this module`
-        : importedAsync
-          ? `${call.callee} is declared \`async\` in ${importedAsync}`
-          : `${call.callee} is an asynchronous I/O call`;
-      const confidence: Confidence = localAsync || importedAsync ? 'strong' : 'moderate';
+      const confidence: Confidence = declaredAsync ? 'strong' : 'moderate';
 
       out.push(ctx.finding({
         ruleId: 'reliability.async.floating_promise',

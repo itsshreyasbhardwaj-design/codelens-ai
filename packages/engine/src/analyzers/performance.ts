@@ -75,6 +75,12 @@ const WRITE_LEAVES = new Set([
   'put', 'putItem', 'add', 'set', 'push', 'drop', 'truncate',
 ]);
 
+/** Write operations no array or Map has, so the name alone identifies a data layer. */
+const ORM_ONLY_WRITES = new Set([
+  'createMany', 'updateMany', 'deleteMany', 'upsert', 'bulkCreate', 'insertMany', 'insertOne',
+  'updateOne', 'deleteOne', 'putItem', 'executeRaw', '$executeRaw', '$executeRawUnsafe',
+]);
+
 /** Reads that can only come back with at most one row, so a row bound is implicit. */
 const SINGLE_ROW_READS = new Set([
   'findUnique', 'findUniqueOrThrow', 'findFirst', 'findFirstOrThrow', 'findOne', 'findOneBy',
@@ -144,11 +150,16 @@ function resolveModel(map: RepoMap, name: string | undefined): DataModel | undef
   });
 }
 
-/** A row ceiling present in the call's arguments or chained onto the callee. */
+/**
+ * A row ceiling present in the call's arguments or chained onto the callee.
+ *
+ * The trailing alternation matters: `findMany({ where, take })` passes the bound
+ * as a shorthand property, and a rule that only recognised `take:` would report
+ * a correctly bounded query as unbounded.
+ */
 const ROW_BOUND_ARG_RE =
-  /\b(?:take|limit|first|last|perPage|per_page|pageSize|page_size|maxResults|max_results|maxItems|top|rowCount|batchSize|batch_size|chunkSize)\s*[:=]/;
+  /\b(?:take|limit|first|last|perPage|per_page|pageSize|page_size|maxResults|max_results|maxItems|top|rowCount|batchSize|batch_size|chunkSize)\s*(?::|=|,|\}|$)/;
 const ROW_BOUND_CHAIN_RE = /\.(?:take|limit|first|top|paginate|slice|head)$/;
-const PAGE_CURSOR_RE = /\b(?:cursor|skip|offset|after|before|page|startAfter|startKey|ExclusiveStartKey)\s*[:=]/;
 const SQL_BOUND_RE = /\bLIMIT\s+(?:\d|[:$?@])|\bTOP\s*\(?\s*\d|\bFETCH\s+(?:FIRST|NEXT)\b|\bROWNUM\b/i;
 const SQL_SELECT_RE = /\bSELECT\b[\s\S]*\bFROM\b/i;
 const SQL_AGGREGATE_ONLY_RE = /\bSELECT\s+(?:DISTINCT\s+)?(?:COUNT|SUM|AVG|MIN|MAX)\s*\(/i;
@@ -176,6 +187,46 @@ function enclosingSymbol(mod: ParsedModule, line: number): SymbolInfo | undefine
   return best ?? fallback;
 }
 
+/**
+ * The call's own source text, re-read from the snapshot and balanced on parens.
+ *
+ * The parser caps each argument at a couple of hundred characters, which is
+ * plenty for most rules but not for query options: `findMany({ where: {…}, take,
+ * include: {…} })` loses its `take` to the cap, and a rule reading only the
+ * captured arguments would report a correctly bounded query as unbounded. So
+ * boundedness is decided against the real source.
+ */
+function callSourceText(
+  map: RepoMap, mod: ParsedModule, call: CallRef, lineCache: Map<string, string[]>,
+): string | undefined {
+  let lines = lineCache.get(mod.path);
+  if (!lines) {
+    const file = map.filesByPath.get(mod.path);
+    if (!file?.text) return undefined;
+    lines = file.text.split('\n');
+    lineCache.set(mod.path, lines);
+  }
+  const startIdx = call.line - 1;
+  if (startIdx < 0 || startIdx >= lines.length) return undefined;
+
+  const window = codeText(lines.slice(startIdx, startIdx + 80).join('\n'), mod.language);
+  const leaf = calleeSegments(call.callee).pop() ?? '';
+  const leafAt = leaf ? window.indexOf(leaf) : -1;
+  const open = window.indexOf('(', leafAt === -1 ? 0 : leafAt);
+  if (open === -1) return undefined;
+
+  let depth = 0;
+  for (let i = open; i < window.length && i - open < 6000; i++) {
+    const ch = window[i];
+    if (ch === '(') depth++;
+    else if (ch === ')') {
+      depth--;
+      if (depth === 0) return window.slice(open, i + 1);
+    }
+  }
+  return window.slice(open, Math.min(window.length, open + 6000));
+}
+
 /** Raw statement text for a call whose argument is an identifier holding SQL. */
 function sqlTextFor(mod: ParsedModule, call: CallRef): string | undefined {
   const inline = call.args.find((a) => SQL_SELECT_RE.test(a));
@@ -186,13 +237,17 @@ function sqlTextFor(mod: ParsedModule, call: CallRef): string | undefined {
   return sym?.text;
 }
 
-/** Field names a `where` clause filters on, restricted to real columns of the model. */
-function whereFieldsFor(argText: string, model: DataModel | undefined): string[] {
-  if (!model) return [];
-  const whereIdx = /\bwhere\s*:/.exec(argText)?.index;
-  if (whereIdx === undefined) return [];
-  const open = argText.indexOf('{', whereIdx);
-  if (open === -1) return [];
+/**
+ * Field names a `where` clause filters on, restricted to real columns of the model.
+ *
+ * Only a `where` at the top level of the options object counts. A `where` nested
+ * inside an `include` belongs to the related model, and attributing its columns
+ * to this one would invent index recommendations for the wrong table.
+ */
+function whereFieldsFor(argText: string, model: DataModel | undefined): { fields: string[]; block?: string } {
+  if (!model) return { fields: [] };
+  const open = topLevelWhereBrace(argText);
+  if (open === undefined) return { fields: [] };
   let depth = 0;
   let end = -1;
   for (let i = open; i < argText.length; i++) {
@@ -206,9 +261,11 @@ function whereFieldsFor(argText: string, model: DataModel | undefined): string[]
   for (const f of model.fields) fieldTypes.set(f.name.toLowerCase(), f.type ?? '');
   for (const r of model.relations) modelNames.add(r.to.toLowerCase());
 
+  const keys = new Set<string>();
+  collectObjectKeys(block, keys);
+
   const out: string[] = [];
-  for (const m of block.matchAll(/([A-Za-z_][\w]*)\s*:/g)) {
-    const key = m[1]!;
+  for (const key of keys) {
     const type = fieldTypes.get(key.toLowerCase());
     if (type === undefined) continue; // an operator, or a field of a nested relation
     // A relation field is a join, not a column that an index on this table serves.
@@ -216,7 +273,125 @@ function whereFieldsFor(argText: string, model: DataModel | undefined): string[]
     const field = model.fields.find((f) => f.name.toLowerCase() === key.toLowerCase())!;
     if (!out.includes(field.name)) out.push(field.name);
   }
-  return out;
+  return { fields: out, block };
+}
+
+/**
+ * Every property name in an object literal, at any depth.
+ *
+ * Shorthand properties have to be collected as well as `key: value` pairs:
+ * `where: { queue, status: 'pending' }` filters on `queue`, and missing it would
+ * hide the fact that an existing index already covers the predicate — which
+ * would turn a correctly indexed query into a fabricated "missing index".
+ */
+function collectObjectKeys(block: string, out: Set<string>, depth = 0): void {
+  if (depth > 6) return;
+  for (const segment of splitTopLevel(block, ',')) {
+    const colon = topLevelIndexOf(segment, ':');
+    if (colon === -1) {
+      const bare = segment.trim();
+      if (/^[A-Za-z_$][\w$]*$/.test(bare)) out.add(bare);
+      continue;
+    }
+    const key = segment.slice(0, colon).trim().replace(/^['"`]|['"`]$/g, '');
+    if (/^[A-Za-z_$][\w$]*$/.test(key)) out.add(key);
+    const value = segment.slice(colon + 1);
+    const open = value.search(/[{[]/);
+    if (open === -1) continue;
+    let level = 0;
+    for (let i = open; i < value.length; i++) {
+      const ch = value[i];
+      if (ch === '{' || ch === '[') level++;
+      else if (ch === '}' || ch === ']') {
+        level--;
+        if (level === 0) { collectObjectKeys(value.slice(open + 1, i), out, depth + 1); break; }
+      }
+    }
+  }
+}
+
+/** Split on a separator that sits outside braces, brackets, parens, and quotes. */
+function splitTopLevel(text: string, separator: string): string[] {
+  const parts: string[] = [];
+  let depth = 0;
+  let quote: string | undefined;
+  let start = 0;
+  for (let i = 0; i < text.length; i++) {
+    const ch = text[i]!;
+    if (quote) {
+      if (ch === '\\') i++;
+      else if (ch === quote) quote = undefined;
+      continue;
+    }
+    if (ch === '"' || ch === "'" || ch === '`') { quote = ch; continue; }
+    if (ch === '{' || ch === '[' || ch === '(') depth++;
+    else if (ch === '}' || ch === ']' || ch === ')') depth--;
+    else if (ch === separator && depth === 0) { parts.push(text.slice(start, i)); start = i + 1; }
+  }
+  parts.push(text.slice(start));
+  return parts;
+}
+
+/** Index of the first separator outside braces, brackets, parens, and quotes. */
+function topLevelIndexOf(text: string, separator: string): number {
+  let depth = 0;
+  let quote: string | undefined;
+  for (let i = 0; i < text.length; i++) {
+    const ch = text[i]!;
+    if (quote) {
+      if (ch === '\\') i++;
+      else if (ch === quote) quote = undefined;
+      continue;
+    }
+    if (ch === '"' || ch === "'" || ch === '`') { quote = ch; continue; }
+    if (ch === '{' || ch === '[' || ch === '(') depth++;
+    else if (ch === '}' || ch === ']' || ch === ')') depth--;
+    else if (ch === separator && depth === 0) return i;
+  }
+  return -1;
+}
+
+/** Index of the brace opening a `where` object at the top level of the options literal. */
+function topLevelWhereBrace(text: string): number | undefined {
+  const objStart = text.indexOf('{');
+  if (objStart === -1) return undefined;
+  let depth = 0;
+  for (let i = objStart; i < text.length; i++) {
+    const ch = text[i];
+    if (ch === '{' || ch === '[' || ch === '(') { depth++; continue; }
+    if (ch === '}' || ch === ']' || ch === ')') { depth--; if (depth === 0) break; continue; }
+    if (depth !== 1 || ch !== 'w') continue;
+    const m = /^where\s*:\s*\{/.exec(text.slice(i));
+    if (!m) continue;
+    if (i > objStart && /[\w$.]/.test(text[i - 1] ?? '')) continue;
+    return text.indexOf('{', i + 5);
+  }
+  return undefined;
+}
+
+const LOW_CARDINALITY_NAMES =
+  /^(?:status|state|type|kind|role|conclusion|category|level|severity|visibility|provider|mode|stage|phase|tier|gender|locale|currency|plan|tag|flag|priority)$/i;
+const BOOLEAN_NAME_RE = /^(?:is|has|can|should|allow|enable|disable)[A-Z_]|^(?:enabled|disabled|active|inactive|deleted|archived|demo|public|private|verified|published|draft|done|completed|read|seen|hidden|locked|flaky)$/;
+const BOOLEAN_TYPE_RE = /^(?:boolean|bool|bit|tinyint)/i;
+
+/**
+ * Columns an index is unlikely to help, so recommending one would be weak advice.
+ *
+ * A boolean or an enum-shaped status splits the table into a handful of buckets;
+ * the planner will usually scan anyway, and the right answer is a composite
+ * index led by a selective column, which this rule cannot choose for the reader.
+ */
+function isLowCardinality(model: DataModel, field: string): boolean {
+  const def = model.fields.find((f) => f.name === field);
+  if (def?.type && BOOLEAN_TYPE_RE.test(def.type.replace(/\[\]$/, ''))) return true;
+  return LOW_CARDINALITY_NAMES.test(field) || BOOLEAN_NAME_RE.test(field);
+}
+
+/** True when the predicate on this field is a text search, which a B-tree index does not serve. */
+function usesTextSearchOperator(whereBlock: string, field: string): boolean {
+  const m = new RegExp(`\\b${escapeRe(field)}\\s*:\\s*\\{([^{}]{0,200})\\}`).exec(whereBlock);
+  if (!m) return false;
+  return /\b(?:contains|startsWith|endsWith|search|mode|like|ilike|regex|matches)\b/i.test(m[1]!);
 }
 
 /** True when an index on `field` would serve a filter on it. */
@@ -237,13 +412,35 @@ interface DataCall {
   model?: DataModel;
   /** A row ceiling is present. */
   bounded: boolean;
-  /** Pagination machinery (cursor/offset/page) is present. */
-  paginated: boolean;
   /** This read can return more than one row. */
   collection: boolean;
   whereFields: string[];
   /** Raw SQL statement text, when the statement was resolvable. */
   sql?: string;
+  /** Source text of the `where` clause, when one was present. */
+  whereBlock?: string;
+}
+
+/**
+ * Test, fixture, and example code is excluded from this analyzer.
+ *
+ * An unbounded query in a test is the test doing its job. Reporting it costs a
+ * reader attention and teaches them to discount the category.
+ */
+function isTestOrFixturePath(path: string): boolean {
+  return /(?:^|\/)(?:tests?|__tests__|__mocks__|spec|specs|e2e|cypress|playwright|fixtures?|examples?|samples?|mocks?|benchmarks?|stories)\//i.test(path)
+    || /\.(?:test|spec|stories|bench)\.[cm]?[jt]sx?$/i.test(path)
+    || /_test\.py$|^test_|\/test_/.test(path);
+}
+
+/**
+ * Code that does not run while serving users: seeders, migrations, one-off
+ * scripts, demo data. A loop of writes is what a seeder *is*, so the query-shape
+ * rules in this module would only produce noise there.
+ */
+function isOfflineToolingPath(path: string): boolean {
+  return /(?:^|\/)(?:seeds?|seeders?|migrations?|scripts?|tools?|bin|demo|devtools|codegen|generators?)\//i.test(path)
+    || /(?:^|\/)(?:seed|seeder|seed-data|migrate|generate)[-.\w]*\.[cm]?[jt]sx?$/i.test(path);
 }
 
 const NETWORK_ROOTS = new Set([
@@ -271,9 +468,13 @@ function isNetworkCall(callee: string): boolean {
 function collectDataCalls(map: RepoMap): DataCall[] {
   const out: DataCall[] = [];
   const bindingCache = new Map<string, Set<string>>();
+  const lineCache = new Map<string, string[]>();
 
   for (const mod of map.modules.values()) {
     if (!mod.parsed) continue;
+    const role = map.filesByPath.get(mod.path)?.role;
+    if (isTestOrFixturePath(mod.path) || role === 'test') continue;
+    if (isOfflineToolingPath(mod.path) || role === 'migration') continue;
     const dbRoots = dbRootsFor(map, mod, bindingCache);
 
     for (const call of mod.calls) {
@@ -287,14 +488,22 @@ function collectDataCalls(map: RepoMap): DataCall[] {
       const model = resolveModel(map, receiver) ?? (segs.length === 2 ? resolveModel(map, root) : undefined);
       const rootIsDb = dbRoots.has(root) || CONVENTIONAL_DB_ROOTS.has(root);
 
+      // A name that only a data layer has is enough on its own. A name that
+      // arrays and Maps also have (`find`, `get`, `all`, `create`, `set`) needs a
+      // receiver that resolves to a database binding: `job.steps.find(...)`
+      // resolves to a model called Step but is an ordinary array search, and
+      // reporting it as a query would be plainly wrong.
       let kind: DataCall['kind'] | undefined;
       if (ORM_ONLY_READS.has(leaf)) kind = 'db_read';
-      else if (WRITE_LEAVES.has(leaf) && (model !== undefined || dbRoots.has(root))) kind = 'db_write';
-      else if (AMBIGUOUS_READS.has(leaf) && (model !== undefined || rootIsDb)) kind = 'db_read';
+      else if (ORM_ONLY_WRITES.has(leaf) && (model !== undefined || rootIsDb)) kind = 'db_write';
+      else if (AMBIGUOUS_READS.has(leaf) && rootIsDb) kind = 'db_read';
+      else if (WRITE_LEAVES.has(leaf) && rootIsDb) kind = 'db_write';
       else if (isNetworkCall(call.callee)) kind = 'network';
       if (!kind) continue;
 
-      const argText = call.args.join(' ');
+      // Prefer the real source of the call over the parser's capped arguments.
+      const source = callSourceText(map, mod, call, lineCache);
+      const argText = source && source.length > 0 ? source : call.args.join(' ');
       const sql = kind === 'db_read' ? sqlTextFor(mod, call) : undefined;
       const sqlBounded = sql ? SQL_BOUND_RE.test(sql) || SQL_AGGREGATE_ONLY_RE.test(sql) : false;
       const bounded =
@@ -303,12 +512,13 @@ function collectDataCalls(map: RepoMap): DataCall[] {
         || ROW_BOUND_CHAIN_RE.test(call.callee)
         || sqlBounded;
 
+      const where = whereFieldsFor(argText, model);
       out.push({
         mod, call, kind, leaf, model,
         bounded,
-        paginated: bounded || PAGE_CURSOR_RE.test(argText) || /\.(?:paginate|cursor)$/.test(call.callee),
         collection: COLLECTION_READS.has(leaf) && !SINGLE_ROW_READS.has(leaf),
-        whereFields: whereFieldsFor(argText, model),
+        whereFields: where.fields,
+        whereBlock: where.block,
         sql,
       });
     }
@@ -354,6 +564,35 @@ function loopKindAbove(mod: ParsedModule, sym: SymbolInfo, line: number): LoopCo
     }
   }
   return UNKNOWN_LOOP;
+}
+
+/**
+ * Where the loop's elements came from.
+ *
+ * `bounded` means the loop iterates a query result that already has a row
+ * ceiling, so the per-element work is capped by that ceiling: a worker that
+ * claims a batch with `take: n` and then updates each row is not an N+1 problem.
+ * `unbounded` means N is the size of a table. `unknown` covers everything else —
+ * a payload, a fixed registry, a computed array — where N is real but its scale
+ * cannot be established from the source.
+ */
+function loopSourceKind(
+  mod: ParsedModule, sym: SymbolInfo, line: number, dataCalls: DataCall[],
+): 'bounded' | 'unbounded' | 'unknown' {
+  const lines = codeText(sym.text, mod.language).split('\n');
+  const offset = Math.min(Math.max(line - sym.startLine, 0), lines.length - 1);
+  let iterated: string | undefined;
+  for (let i = offset; i >= 0 && iterated === undefined; i--) {
+    const text = lines[i] ?? '';
+    iterated = /\b(?:of|in)\s+([A-Za-z_$][\w$]*)\s*\)/.exec(text)?.[1]
+      ?? /\b([A-Za-z_$][\w$]*)\s*\.\s*(?:forEach|map|flatMap)\s*\(/.exec(text)?.[1];
+  }
+  if (!iterated) return 'unknown';
+  const binding = mod.symbols.find((s) => s.name === iterated && s.startLine >= sym.startLine && s.startLine <= sym.endLine);
+  if (!binding) return 'unknown';
+  const producer = dataCalls.find((dc) => dc.mod.path === mod.path && dc.call.line === binding.startLine);
+  if (!producer) return 'unknown';
+  return producer.bounded ? 'bounded' : 'unbounded';
 }
 
 /** True for a loop header that iterates an inline array literal of at most four elements. */
@@ -484,6 +723,8 @@ function queriesInsideLoops(ctx: AnalyzerContext, dataCalls: DataCall[]): Findin
     const sym = enclosingSymbol(mod, call.line);
     const loop = sym ? loopKindAbove(mod, sym, call.line) : UNKNOWN_LOOP;
     if (loop.boundedLiteral) continue;
+    const source = sym ? loopSourceKind(mod, sym, call.line, dataCalls) : 'unknown';
+    if (source === 'bounded') continue;
     const serialised = call.awaited && !loop.concurrent;
     const subject = dc.model?.name ?? 'the data layer';
     const isWrite = dc.kind === 'db_write';
@@ -504,7 +745,11 @@ function queriesInsideLoops(ctx: AnalyzerContext, dataCalls: DataCall[]): Findin
     out.push(ctx.finding({
       ruleId: 'performance.query.n_plus_one',
       title: `Database ${isWrite ? 'write' : 'query'} inside ${loop.phrase} (N+1 against ${subject})`,
-      severity: serialised ? 'high' : 'medium',
+      // Blast radius is largest when the iterated collection is itself an
+      // unbounded query result: N is then the table size. A write loop is held
+      // at medium because batching writes is a more delicate change than
+      // batching reads, and the usual setting is a background path.
+      severity: !isWrite && serialised && source === 'unbounded' ? 'high' : 'medium',
       confidence: 'strong',
       files: [mod.path],
       symbol: call.inSymbol,
@@ -518,6 +763,11 @@ function queriesInsideLoops(ctx: AnalyzerContext, dataCalls: DataCall[]): Findin
           : call.awaited
             ? ' Because the call is awaited inside the loop, each round trip also waits for the previous one to finish, so the waiting accumulates on top of the query count.'
             : ' The call is not awaited at this site, so whether the round trips overlap depends on the driver and on how the results are collected; with a synchronous driver the loop blocks for the whole sequence. Either way the statement count grows with the collection.')
+        + (source === 'unbounded'
+          ? ' The collection being iterated is itself the result of a query with no row ceiling, so N here is the size of a table rather than a fixed batch.'
+          : source === 'unknown'
+            ? ' What the loop iterates could not be traced to a query, so N may be small and fixed — confirm the collection size before treating this as urgent.'
+            : '')
         + (redundant
           ? ` The same handler already loaded '${redundant.relation}' through an include on an earlier query, so this loop re-fetches rows the process is already holding in memory.`
           : ''),
@@ -946,10 +1196,20 @@ function missingIndexes(ctx: AnalyzerContext, dataCalls: DataCall[]): Finding[] 
   // field key -> every site that filters on it
   const sites = new Map<string, { model: DataModel; field: string; calls: DataCall[] }>();
   for (const dc of dataCalls) {
-    if (!dc.model || dc.whereFields.length === 0) continue;
+    if (!dc.model || dc.whereFields.length === 0 || !dc.whereBlock) continue;
     if (dc.kind === 'network') continue;
+
+    // A predicate we cannot see in full (a spread of a where fragment built
+    // elsewhere) cannot support the claim that nothing indexed narrows it.
+    if (/\.\.\./.test(dc.whereBlock)) continue;
+    // An existing index on any column in the same predicate already narrows the
+    // scan, so a second single-column index is not the recommendation.
+    if (dc.whereFields.some((f) => indexCovers(dc.model!, f))) continue;
+
     for (const field of dc.whereFields) {
       if (indexCovers(dc.model, field)) continue;
+      if (isLowCardinality(dc.model, field)) continue;
+      if (usesTextSearchOperator(dc.whereBlock, field)) continue;
       const key = `${dc.model.file}::${dc.model.name}.${field}`;
       const entry = sites.get(key) ?? { model: dc.model, field, calls: [] };
       entry.calls.push(dc);
@@ -1122,6 +1382,15 @@ function serialIndependentReads(ctx: AnalyzerContext, dataCalls: DataCall[]): Fi
       });
       if (dependsOnEarlier) break;
 
+      // An identical repeated read is duplicated work, not serialised work, and
+      // is reported as such by the duplicate-read rule. Overlapping two copies
+      // of the same query would be the wrong advice.
+      const identical = independent.some(
+        (earlier) => earlier.call.callee === curr.call.callee
+          && earlier.call.args.join('|') === curr.call.args.join('|'),
+      );
+      if (identical) break;
+
       // Is there control flow between them that concurrency would change?
       const from = Math.max(prev.call.line - sym.startLine + 1, 0);
       const to = Math.min(curr.call.line - sym.startLine, bodyLines.length);
@@ -1177,7 +1446,13 @@ function serialIndependentReads(ctx: AnalyzerContext, dataCalls: DataCall[]): Fi
 
 // ------------------------------------------------------ duplicate fetches ---
 
-/** The same read issued more than once with identical arguments. */
+/**
+ * The same read issued more than once with identical arguments *within one scope*.
+ *
+ * Restricted to a single enclosing function on purpose. Two different endpoints
+ * running the same query is normal and not a defect; the same query twice in one
+ * execution path is work done twice for one answer.
+ */
 function duplicateDataFetches(ctx: AnalyzerContext, dataCalls: DataCall[]): Finding[] {
   const { map } = ctx;
   const out: Finding[] = [];
@@ -1188,59 +1463,46 @@ function duplicateDataFetches(ctx: AnalyzerContext, dataCalls: DataCall[]): Find
     const argText = dc.call.args.join('|').trim();
     if (argText.length === 0) continue; // an argument-free call tells us nothing about the result set
     if (/=>|function\s*\(/.test(argText)) continue; // a callback argument is not a query key
-    const key = `${dc.call.callee}(${argText})`;
+    const sym = enclosingSymbol(dc.mod, dc.call.line);
+    if (!sym) continue;
+    const key = `${dc.mod.path}::${sym.name}::${sym.startLine}::${dc.call.callee}(${argText})`;
     const list = groups.get(key) ?? [];
     list.push(dc);
     groups.set(key, list);
   }
 
-  for (const [key, group] of groups) {
+  for (const [groupKey, group] of groups) {
     if (group.length < 2) continue;
     const sites = [...new Set(group.map((d) => `${d.mod.path}:${d.call.line}`))];
     if (sites.length < 2) continue;
-    const distinctModules = new Set(group.map((d) => d.mod.path));
-    const sameRequestPath = distinctModules.size === 1;
+    const key = groupKey.split('::').slice(3).join('::');
+    const scope = group[0]!.call.inSymbol ?? enclosingSymbol(group[0]!.mod, group[0]!.call.line)?.name ?? 'this scope';
     const callee = group[0]!.call.callee;
 
     out.push(ctx.finding({
       ruleId: 'performance.fetch.duplicate_request',
-      title: `${callee}() is issued with identical arguments at ${sites.length} call sites`,
+      title: `${callee}() is issued with identical arguments ${sites.length} times in ${scope}`,
       severity: 'low',
       confidence: 'moderate',
       status: 'needs_runtime_verification',
-      detectionSource: distinctModules.size > 1 ? 'graph' : 'static',
-      files: [...distinctModules],
-      symbol: group[0]!.call.inSymbol,
+      files: [group[0]!.mod.path],
+      symbol: scope,
       evidence: group.slice(0, 4).map((d) =>
         map.evidenceLine(d.mod.path, d.call.line, `identical read: ${key.slice(0, 160)}`)),
-      trace: distinctModules.size > 1
-        ? {
-          kind: 'call',
-          steps: group.slice(0, 4).map((d) => ({
-            file: d.mod.path, line: d.call.line, symbol: d.call.inSymbol,
-            detail: `issues ${callee}() with the same arguments`,
-          })),
-          complete: true,
-        }
-        : undefined,
       explanation:
-        `The same read — ${key.slice(0, 200)} — appears at ${sites.length} separate call sites (${sites.slice(0, 3).join(', ')}${sites.length > 3 ? ', …' : ''}). ` +
-        'Identical arguments mean identical result sets, so whenever these sites run for the same request the work is done more than once and the second ' +
-        'result is discarded or recomputed. Whether they do run together on a single request is a property of the call graph at run time, which this scan ' +
-        'does not execute.' +
-        (sameRequestPath
-          ? ' All of the sites are in one module, which makes a shared execution path likely.'
-          : ' The sites are in different modules, so confirm whether a single request reaches more than one of them.'),
+        `The same read — ${key.slice(0, 200)} — appears ${sites.length} times inside ${scope} (${sites.slice(0, 3).join(', ')}${sites.length > 3 ? ', …' : ''}). ` +
+        'Identical arguments mean identical result sets, so one execution of this function does the same work more than once and discards or recomputes the ' +
+        'duplicate. Whether every one of these lines runs on each pass depends on the branches taken at run time, which this scan does not execute.',
       userImpact:
-        'Where these sites run together, the user waits for repeated work that produces the same answer, and the data store serves duplicate load for no ' +
+        'Where these lines run together, the user waits for repeated work that produces the same answer, and the data store serves duplicate load for no ' +
         'additional information. It can also produce visible inconsistency: two reads of the same key at different moments can disagree.',
-      likelyRootCause: 'Two components or layers each fetched what they needed independently, with no shared read between them.',
+      likelyRootCause: 'Each consumer in this function fetched what it needed independently, with no shared read between them.',
       downstreamConsequences: [
         'Duplicate reads multiply load on the data store under traffic without any change in the data returned.',
-        'The two copies can drift apart within one request, producing inconsistent output that is hard to reproduce.',
+        'The two copies can drift apart within one pass, producing inconsistent output that is hard to reproduce.',
       ],
       remediation:
-        'Fetch once and pass the result down, or put the read behind a shared, request-scoped layer: a per-request cache, a batching loader (DataLoader-style) ' +
+        'Read once into a local binding and reuse it, or put the read behind a shared, request-scoped layer: a per-request cache, a batching loader (DataLoader-style) ' +
         'that collapses identical keys, or the data-fetching library\'s own deduplication and cache keys where one is already in use. Pick the owner of the ' +
         'read deliberately rather than letting each consumer fetch for itself.',
       effort: 'small',
@@ -1534,9 +1796,9 @@ function heavyClientDependencies(ctx: AnalyzerContext): Finding[] {
  *
  * Gated hard on purpose. It only fires for a handler that issues several reads
  * or an unbounded one, only when the project shows no caching primitive at all,
- * and never for a file this analyzer has already reported on — a handler that
- * already has an N+1 or a pagination finding does not need a third note saying
- * the same work is uncached.
+ * and never for a file whose query shape this analyzer has already reported on —
+ * a handler that already has an N+1 or a pagination finding does not need a
+ * third note saying the same work is uncached.
  */
 function absentCacheOnReadPath(ctx: AnalyzerContext, dataCalls: DataCall[], already: Finding[]): Finding[] {
   const { map } = ctx;
@@ -1549,7 +1811,15 @@ function absentCacheOnReadPath(ctx: AnalyzerContext, dataCalls: DataCall[], alre
   });
   if (projectUsesCaching) return out;
 
-  const reportedFiles = new Set(already.flatMap((f) => f.files));
+  const QUERY_SHAPE_RULES = new Set([
+    'performance.query.n_plus_one',
+    'performance.query.unbounded',
+    'performance.api.missing_pagination',
+    'performance.render.unbounded_list',
+  ]);
+  const reportedFiles = new Set(
+    already.filter((f) => QUERY_SHAPE_RULES.has(f.ruleId)).flatMap((f) => f.files),
+  );
 
   for (const r of map.routes) {
     if (r.method !== 'GET') continue;

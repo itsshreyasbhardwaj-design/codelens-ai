@@ -498,7 +498,7 @@ function connectionPoolBounds(ctx: AnalyzerContext): Finding[] {
             'what it is, and it changes if the driver is upgraded. Second, it is a per-process limit, while the constraint that actually ' +
             'matters is the database server\'s own maximum connection count, shared by every instance of this application plus migrations ' +
             'and any admin tooling. Nothing in the source connects the two numbers, so adding instances to absorb load silently multiplies ' +
-            'the demand on the database. No concurrency figure is stated here deliberately: the point at which this bites depends on the ' +
+            'the demand on the database. No concurrency figure is stated here deliberately: the point at which this becomes material depends on the ' +
             'database configuration and the real request mix, and neither is visible in a source snapshot.',
           userImpact:
             'Once every connection in the pool is busy, further requests do not fail — they wait for one to be released. Users see pages ' +
@@ -1093,7 +1093,7 @@ function unatomicWriteSequence(ctx: AnalyzerContext): { findings: Finding[]; han
       remediation:
         'Make the whole sequence one atomic unit and make a repeat application impossible. Put the writes in a single database transaction ' +
         'so they either all apply or none do. Then add a uniqueness guarantee the database enforces: for a delivery callback, store the ' +
-        'provider\'s event identifier in a table with a unique constraint and insert it *inside the same transaction, before* the state ' +
+        'provider\'s event identifier in a table with a unique constraint and insert it inside that same transaction and before the state ' +
         'change, so a duplicate delivery fails the insert and the transaction rolls back untouched. Make the state change conditional as ' +
         'well, so it is a no-op when already applied — for example by including the expected current state in the where clause (a ' +
         'compare-and-set) rather than writing the new state unconditionally. Where several callers legitimately contend for one record, take ' +
