@@ -213,7 +213,7 @@ export interface ApiEndpoint {
   requestShape?: string;
   responseShape?: string;
   validation: 'present' | 'absent' | 'partial' | 'unknown';
-  errorHandling: 'present' | 'absent' | 'unknown';
+  errorHandling: 'present' | 'absent' | 'partial' | 'unknown';
 }
 
 export interface DataModel {

@@ -575,7 +575,7 @@ export default async function ProjectOverviewPage({ params }: { params: Promise<
             <ul
               style={{
                 margin: 0, padding: 0, listStyle: 'none', display: 'grid', gap: '0.6rem',
-                gridTemplateColumns: 'repeat(auto-fit, minmax(19rem, 1fr))',
+                gridTemplateColumns: 'repeat(auto-fit, minmax(17rem, 1fr))',
               }}
             >
               {sortedFeatures.map((f) => (
@@ -628,7 +628,14 @@ export default async function ProjectOverviewPage({ params }: { params: Promise<
           )}
         </Card>
 
-        {/* ------------------------------------------------------- scan history */}
+        {/*
+          ------------------------------------------------------- scan history
+
+          `minWidth: 0` on the grid item is what lets the Table primitive's own
+          horizontal scroll do its job: without it the grid track grows to the
+          table's min-content width and the whole page scrolls sideways instead.
+        */}
+        <div style={{ minWidth: 0 }}>
         <Card>
           <SectionHeading
             id="history"
@@ -686,6 +693,7 @@ export default async function ProjectOverviewPage({ params }: { params: Promise<
             </p>
           )}
         </Card>
+        </div>
       </Shell>
     </>
   );

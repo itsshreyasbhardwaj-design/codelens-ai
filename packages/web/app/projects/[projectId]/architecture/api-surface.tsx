@@ -57,6 +57,16 @@ function AuthCell({ value }: { value: string }) {
   );
 }
 
+/**
+ * Deep link to one finding on the findings surface, which filters from `?q=`
+ * (matched against the display id among other fields) and anchors each card as
+ * `finding-<displayId>`.
+ */
+function findingHref(projectId: string, displayId: string): string {
+  const base = `/projects/${encodeURIComponent(projectId)}/findings`;
+  return `${base}?q=${encodeURIComponent(displayId)}#finding-${encodeURIComponent(displayId)}`;
+}
+
 function Plain({ value, notes }: { value: string; notes: Record<string, string> }) {
   return <span title={notes[value] ?? value}>{value}</span>;
 }
@@ -187,7 +197,7 @@ export function ApiSurface({
                         {hits.map((f) => (
                           <li key={f.displayId} style={{ display: 'grid', gap: '0.15rem' }}>
                             <Link
-                              href={`/projects/${encodeURIComponent(projectId)}/findings/${encodeURIComponent(f.displayId)}`}
+                              href={findingHref(projectId, f.displayId)}
                               style={{ fontFamily: 'var(--font-mono)', fontSize: '0.78rem' }}
                             >
                               {f.displayId}

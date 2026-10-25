@@ -1,10 +1,10 @@
 import { spawnSync } from 'node:child_process';
 import { mkdtempSync, writeFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { dirname, join } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { join } from 'node:path';
 import type { ParsedModule } from './types.ts';
 import { emptyModule } from './types.ts';
+import { pyAstSource } from './py_ast_embedded.ts';
 
 /**
  * Python parsing via the interpreter's own `ast` module.
@@ -19,8 +19,6 @@ import { emptyModule } from './types.ts';
  * imported or executed.
  */
 
-const HERE = dirname(fileURLToPath(import.meta.url));
-const SCRIPT = join(HERE, 'py_ast.py');
 const TIMEOUT_MS = 10_000;
 const MAX_OUTPUT = 32 * 1024 * 1024;
 
@@ -30,7 +28,11 @@ let pythonBin: string | null | undefined;
 export function findPython(): string | null {
   if (pythonBin !== undefined) return pythonBin;
   for (const candidate of ['python3', 'python']) {
-    const probe = spawnSync(candidate, ['-I', '-c', 'import ast,sys;print(sys.version_info[0])'], {
+    // turbopackIgnore: the interpreter is discovered on PATH at runtime, so a
+    // bundler cannot and should not trace it. Nothing project-relative is read
+    // here: the extractor itself is embedded (see py_ast_embedded.ts) and the
+    // only filesystem access is to the OS temp directory.
+    const probe = spawnSync(/*turbopackIgnore: true*/ candidate, ['-I', '-c', 'import ast,sys;print(sys.version_info[0])'], {
       encoding: 'utf8', timeout: 5000,
     });
     if (probe.status === 0 && probe.stdout.trim() === '3') {
@@ -51,14 +53,23 @@ export function parsePython(path: string, source: string): ParsedModule {
 
   const dir = mkdtempSync(join(tmpdir(), 'codelens-py-'));
   const tmpFile = join(dir, 'source.py');
+  // The extractor is written beside the source rather than resolved from the
+  // module directory, so it works identically from source and from a bundle.
+  const scriptFile = join(dir, 'extract.py');
   try {
     writeFileSync(tmpFile, source, 'utf8');
-    const res = spawnSync(bin, ['-I', SCRIPT, tmpFile], {
+    writeFileSync(scriptFile, pyAstSource(), 'utf8');
+    // turbopackIgnore: as above — a PATH-resolved interpreter reading two files
+    // this function just wrote into a private temp directory.
+    const res = spawnSync(/*turbopackIgnore: true*/ bin, ['-I', scriptFile, tmpFile], {
       encoding: 'utf8',
       timeout: TIMEOUT_MS,
       maxBuffer: MAX_OUTPUT,
-      // No environment is inherited: the extractor needs none.
-      env: { PATH: process.env.PATH ?? '' },
+      // Deliberately minimal: the extractor needs nothing but PATH, and not
+      // inheriting the environment keeps the analysed project's own variables
+      // and any secrets out of the subprocess. Cast through unknown because
+      // some setups declare additional ProcessEnv keys as required.
+      env: { PATH: process.env.PATH ?? '' } as unknown as NodeJS.ProcessEnv,
     });
 
     if (res.error) {

@@ -112,10 +112,79 @@ function modelSdkImports(mod: ParsedModule): string[] {
     .map((i) => i.specifier);
 }
 
+/**
+ * Modules that import a provider SDK directly.
+ *
+ * Most projects construct the client once in a shared module and import it
+ * everywhere else, so gating on a direct SDK import alone would skip exactly
+ * the files where the calls live.
+ */
+function sdkModulePaths(map: RepoMap): Map<string, string[]> {
+  const out = new Map<string, string[]>();
+  for (const mod of map.modules.values()) {
+    if (!mod.parsed) continue;
+    const sdks = modelSdkImports(mod);
+    if (sdks.length > 0) out.set(mod.path, sdks);
+  }
+  return out;
+}
+
+/** The provider SDKs reachable from this module, directly or through one local import. */
+function reachableSdks(mod: ParsedModule, sdkModules: Map<string, string[]>): string[] {
+  const direct = modelSdkImports(mod);
+  const viaLocal = mod.imports
+    .filter((i) => i.resolvedPath !== undefined && sdkModules.has(i.resolvedPath))
+    .flatMap((i) => sdkModules.get(i.resolvedPath!) ?? []);
+  return [...new Set([...direct, ...viaLocal])];
+}
+
+/** Client bindings imported from a module that constructs a provider client. */
+function importedClientNames(mod: ParsedModule, sdkModules: Map<string, string[]>): string[] {
+  const CLIENT_WORD =
+    /\b(?:openai|anthropic|claude|gemini|genai|vertex|bedrock|groq|mistral|cohere|together|replicate|ollama|fireworks|openrouter|litellm|llm|chat|model|client|agent|chain)\b/i;
+  const out: string[] = [];
+  for (const imp of mod.imports) {
+    if (imp.resolvedPath === undefined || !sdkModules.has(imp.resolvedPath)) continue;
+    for (const name of imp.names) {
+      if (name === '*' || name === 'default') continue;
+      if (CLIENT_WORD.test(name)) out.push(name);
+    }
+  }
+  return out;
+}
+
+/** Human-readable provider name for a prose sentence, from an SDK specifier. */
+function providerLabel(specifiers: string[]): string {
+  for (const s of specifiers) {
+    if (/openai/i.test(s)) return 'the OpenAI API';
+    if (/anthropic/i.test(s)) return 'the Anthropic API';
+    if (/google|gemini|genai|vertex/i.test(s)) return "Google's model API";
+    if (/azure/i.test(s)) return 'Azure OpenAI';
+    if (/bedrock/i.test(s)) return 'Amazon Bedrock';
+    if (/mistral/i.test(s)) return 'the Mistral API';
+    if (/cohere/i.test(s)) return 'the Cohere API';
+    if (/groq/i.test(s)) return 'the Groq API';
+    if (/replicate/i.test(s)) return 'Replicate';
+    if (/together/i.test(s)) return 'Together AI';
+    if (/huggingface/i.test(s)) return 'Hugging Face';
+    if (/ollama/i.test(s)) return 'a local Ollama server';
+  }
+  return 'a third-party model provider';
+}
+
 function vectorSdkImports(mod: ParsedModule): string[] {
   return mod.imports
     .filter((i) => matchesSdk(i.specifier, VECTOR_SDK_EXACT, VECTOR_SDK_PREFIXES))
     .map((i) => i.specifier);
+}
+
+/** Whether the project retrieves content to ground generation, anywhere. */
+function projectHasRetrieval(map: RepoMap): boolean {
+  if (map.tech.some((t) => t.kind === 'ai' && /pinecone|weaviate|qdrant|chroma|pgvector|lance|milvus/i.test(t.name))) return true;
+  for (const mod of map.modules.values()) {
+    if (mod.parsed && vectorSdkImports(mod).length > 0) return true;
+  }
+  return false;
 }
 
 // ---------------------------------------------------------- model callsites --
@@ -174,12 +243,32 @@ function clientNames(mod: ParsedModule): Set<string> {
   return out;
 }
 
-/** The construction text of an SDK client in this module, for default-option checks. */
-function clientConstructionText(mod: ParsedModule, clients: Set<string>): string {
+/**
+ * The construction text of the SDK clients this module uses, wherever they were
+ * built. Options such as a timeout or a retry policy are routinely set once on
+ * a shared client, so reading only the local module would report an absent
+ * bound that is in fact configured one import away.
+ */
+function clientConstructionText(
+  map: RepoMap,
+  mod: ParsedModule,
+  clients: Set<string>,
+  sdkModules: Map<string, string[]>,
+): string {
   const parts: string[] = [];
   for (const sym of mod.symbols) {
     if (!clients.has(sym.name)) continue;
     parts.push(codeText(sym.text, mod.language));
+  }
+  for (const imp of mod.imports) {
+    if (imp.resolvedPath === undefined || !sdkModules.has(imp.resolvedPath)) continue;
+    const source = map.modules.get(imp.resolvedPath);
+    if (!source?.parsed) continue;
+    const wanted = new Set(imp.names.filter((n) => clients.has(n)));
+    for (const sym of source.symbols) {
+      if (!wanted.has(sym.name) && !clientNames(source).has(sym.name)) continue;
+      parts.push(codeText(sym.text, source.language));
+    }
   }
   return parts.join('\n');
 }
@@ -220,13 +309,15 @@ function enclosingSymbol(mod: ParsedModule, call: CallRef): SymbolInfo | undefin
 
 function collectModelCalls(map: RepoMap): ModelCallSite[] {
   const out: ModelCallSite[] = [];
+  const sdkModules = sdkModulePaths(map);
   for (const mod of map.modules.values()) {
     if (!mod.parsed) continue;
-    const sdks = modelSdkImports(mod);
+    const sdks = reachableSdks(mod, sdkModules);
     if (sdks.length === 0) continue;
     const langchainish = sdks.some((s) => /langchain|llama|dspy|guidance|instructor/i.test(s));
     const clients = clientNames(mod);
-    const clientText = clientConstructionText(mod, clients);
+    for (const name of importedClientNames(mod, sdkModules)) clients.add(name);
+    const clientText = clientConstructionText(map, mod, clients, sdkModules);
     for (const call of mod.calls) {
       const kind = classifyModelCall(call.callee, { clients, langchainish });
       if (!kind) continue;
@@ -248,66 +339,133 @@ function collectModelCalls(map: RepoMap): ModelCallSite[] {
 
 // ------------------------------------------------------- untrusted tracing ---
 
-/** Identifiers in a scope that were read out of the incoming request. */
+/**
+ * Identifiers in a scope that were read out of the incoming request.
+ *
+ * Request values are rarely used where they are read: a body is parsed, a field
+ * is pulled out of it, that field is trimmed or defaulted, and only then does it
+ * reach a prompt. The binding is therefore followed through those steps, and
+ * bare assignments are read as well as declared ones so Python handlers resolve
+ * on the same path as JavaScript ones.
+ */
 function requestDerivedNames(scopeText: string): Map<string, string> {
   const out = new Map<string, string>();
+  const assignments: Array<{ name: string; rhs: string }> = [];
+
   const REQUEST_RHS =
     /^(?:req|request|event|ctx|context|input|payload|body|params|searchParams|query|formData|url)\b/;
-  const REQUEST_TAIL = /\.(?:json|body|formData|text|query|params|args|form|get|getAll)\b/;
+  const REQUEST_TAIL = /\.(?:json|body|formData|text|query|params|args|form|get|getAll|get_json)\b/;
+  const REQUEST_EXPR =
+    /\b(?:req|request|searchParams|formData|payload)\b|\b(?:body|params|query|input)\s*[.[]|\.(?:json|formData|text|get_json)\(\s*\)/;
 
   // const { a, b: c } = await req.json()
-  const destructured = /(?:const|let|var)?\s*\{([^}]*)\}\s*=\s*(?:await\s+)?([A-Za-z_$][\w$.]*)\s*\(?/g;
+  // The declaration keyword is required and the brace body excludes braces, so
+  // a function body's own opening brace cannot be mistaken for a pattern.
+  const destructured = /(?:const|let|var)\s*\{([^{}]*)\}\s*=\s*(?:await\s+)?([A-Za-z_$][\w$.]*)/g;
   for (const m of scopeText.matchAll(destructured)) {
     const rhs = m[2] ?? '';
-    if (!REQUEST_RHS.test(rhs) && !REQUEST_TAIL.test(rhs)) continue;
+    const fromRequest = REQUEST_RHS.test(rhs) || REQUEST_TAIL.test(rhs);
     for (const part of (m[1] ?? '').split(',')) {
       const name = (part.split(':').pop() ?? '').split('=')[0]?.trim().replace(/^\.\.\./, '') ?? '';
-      if (/^[A-Za-z_$][\w$]*$/.test(name)) out.set(name, `${rhs}()`);
+      if (!/^[A-Za-z_$][\w$]*$/.test(name)) continue;
+      if (fromRequest) out.set(name, `${rhs}()`);
+      else assignments.push({ name, rhs });
     }
   }
 
-  // x = <expression that mentions the request>
-  const assigned = /(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*(?::[^=\n]+)?=\s*([^;\n]+)/g;
-  for (const m of scopeText.matchAll(assigned)) {
-    const name = m[1] ?? '';
-    const rhs = m[2] ?? '';
-    if (!/\b(?:req|request|searchParams|formData|payload)\b/.test(rhs)
-      && !/\b(?:body|params|query|input)\s*[.[]/.test(rhs)
-      && !/\.(?:json|formData|text)\(\s*\)/.test(rhs)) continue;
-    if (/^\s*(?:new\s+)?[A-Za-z_$][\w$.]*\s*\(\s*\)\s*$/.test(rhs) && !REQUEST_RHS.test(rhs.trim())) continue;
-    out.set(name, rhs.trim().slice(0, 80));
+  // Declared and bare assignments alike.
+  const declared = /(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*(?::[^=\n]+)?=\s*([^;\n]+)/g;
+  for (const m of scopeText.matchAll(declared)) {
+    assignments.push({ name: m[1] ?? '', rhs: (m[2] ?? '').trim() });
+  }
+  const bare = /^[ \t]*([A-Za-z_$][\w$]*)\s*(?::[^=\n]+)?=\s*([^\n]+)$/gm;
+  for (const m of scopeText.matchAll(bare)) {
+    assignments.push({ name: m[1] ?? '', rhs: (m[2] ?? '').trim() });
   }
 
-  // Python handler parameters named for the request body are request-derived.
-  const pythonBody = /\b(?:await\s+)?request\.(?:json|form|body|get_json)\b/;
-  if (pythonBody.test(scopeText)) out.set('request', 'request body');
+  for (const a of assignments) {
+    if (!a.name || out.has(a.name)) continue;
+    if (!REQUEST_EXPR.test(a.rhs)) continue;
+    out.set(a.name, a.rhs.slice(0, 80));
+  }
+  // Follow the value through reshaping steps (a field read, a trim, a default).
+  for (let pass = 0; pass < 3; pass++) {
+    for (const a of assignments) {
+      if (!a.name || out.has(a.name)) continue;
+      for (const known of [...out.keys()]) {
+        if (!new RegExp(`\\b${known}\\b`).test(a.rhs)) continue;
+        out.set(a.name, `${out.get(known)} (via ${known})`);
+        break;
+      }
+    }
+  }
+
+  // A handler that reads the request object directly, with no intermediate binding.
+  if (/\b(?:await\s+)?request\.(?:json|form|body|get_json)\b/.test(scopeText)) {
+    out.set('request', 'the request body');
+  }
 
   return out;
 }
 
-/** Identifiers in a scope that hold retrieved or stored content. */
-function retrievedNames(scopeText: string, mod: ParsedModule): Map<string, string> {
+const RETRIEVAL_RHS =
+  /\b(?:similaritySearch|similarity_search|similaritySearchWithScore|maxMarginalRelevanceSearch|getRelevantDocuments|get_relevant_documents|asRetriever|retrieve|retriever|vectorStore|vector_store|queryVectors|upsert|findMany|find_many|findUnique|fetchContext|getContext|loadDocuments|readFile|readFileSync|scrape|crawl)\b|\.query\s*\(/;
+
+const DOC_NAME_RE =
+  /^(?:docs?|documents?|chunks?|matches|context|contexts|retrieved|passages|snippets?|sources?|knowledge|corpus)$/i;
+
+const REQUEST_MARKER_RE = /\b(?:req|request|searchParams|formData|payload)\b|\b(?:body|params|query|input)\s*[.[]/;
+
+/**
+ * Identifiers in a scope that hold retrieved or stored content.
+ *
+ * Retrieved text is usually reshaped before it reaches a prompt — a query
+ * returns matches, the matches are mapped to strings, the strings are joined —
+ * so the binding that actually enters the prompt is two or three assignments
+ * away from the retrieval call. The taint is therefore propagated rather than
+ * matched only at the call.
+ */
+function retrievedNames(scopeText: string, mod: ParsedModule, projectRetrieval = false): Map<string, string> {
   const out = new Map<string, string>();
-  const RETRIEVAL_RHS =
-    /\b(?:similaritySearch|similarity_search|similaritySearchWithScore|maxMarginalRelevanceSearch|getRelevantDocuments|get_relevant_documents|asRetriever|retrieve|retriever|vectorStore|vector_store|queryVectors|\.query\s*\(|upsert|findMany|find_many|fetchContext|getContext|loadDocuments|readFile|readFileSync|scrape|crawl)\b/;
+  const assignments: Array<{ name: string; rhs: string }> = [];
+
   const assigned = /(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*(?::[^=\n]+)?=\s*([^;\n]+)/g;
   for (const m of scopeText.matchAll(assigned)) {
-    const rhs = m[2] ?? '';
-    if (!RETRIEVAL_RHS.test(rhs)) continue;
-    out.set(m[1] ?? '', rhs.trim().slice(0, 80));
+    assignments.push({ name: m[1] ?? '', rhs: (m[2] ?? '').trim() });
   }
-  // Destructured retrieval results.
-  const destructured = /(?:const|let|var)\s*\{([^}]*)\}\s*=\s*(?:await\s+)?([^;\n]+)/g;
+  const destructured = /(?:const|let|var)\s*\{([^{}]*)\}\s*=\s*(?:await\s+)?([^;\n]+)/g;
   for (const m of scopeText.matchAll(destructured)) {
-    if (!RETRIEVAL_RHS.test(m[2] ?? '')) continue;
     for (const part of (m[1] ?? '').split(',')) {
       const name = (part.split(':').pop() ?? '').split('=')[0]?.trim() ?? '';
-      if (/^[A-Za-z_$][\w$]*$/.test(name)) out.set(name, (m[2] ?? '').trim().slice(0, 80));
+      if (/^[A-Za-z_$][\w$]*$/.test(name)) assignments.push({ name, rhs: (m[2] ?? '').trim() });
     }
   }
-  if (vectorSdkImports(mod).length > 0) {
-    for (const name of ['docs', 'documents', 'chunks', 'matches', 'context', 'retrieved', 'results', 'passages']) {
-      if (new RegExp(`\\b${name}\\b`).test(scopeText)) out.set(name, 'retrieved document content');
+
+  for (const a of assignments) {
+    if (!a.name || !RETRIEVAL_RHS.test(a.rhs)) continue;
+    out.set(a.name, a.rhs.slice(0, 80));
+  }
+  // Propagate through reshaping steps (map/join/slice/template assembly).
+  for (let pass = 0; pass < 3; pass++) {
+    for (const a of assignments) {
+      if (!a.name || out.has(a.name)) continue;
+      if (REQUEST_MARKER_RE.test(a.rhs)) continue;
+      for (const known of [...out.keys()]) {
+        if (!new RegExp(`\\b${known}\\b`).test(a.rhs)) continue;
+        out.set(a.name, `${out.get(known)} (via ${known})`);
+        break;
+      }
+    }
+  }
+  // Where the project does retrieval but the step that produced the content sits
+  // behind a helper this analyzer did not resolve, a conventionally-named local
+  // holding document text still counts — unless it came from the request.
+  if (projectRetrieval || vectorSdkImports(mod).length > 0) {
+    for (const a of assignments) {
+      if (!a.name || out.has(a.name)) continue;
+      if (!DOC_NAME_RE.test(a.name)) continue;
+      if (REQUEST_MARKER_RE.test(a.rhs)) continue;
+      out.set(a.name, 'content assembled from the retrieval step');
     }
   }
   return out;
@@ -413,7 +571,7 @@ function promptChannels(argText: string): PromptChannel[] {
   const spans = objectSpans(argText);
 
   // role/content message objects
-  for (const m of argText.matchAll(/\brole\s*[:=]\s*['"`](\w+)['"`]/g)) {
+  for (const m of argText.matchAll(/\brole['"`]?\s*[:=]\s*['"`](\w+)['"`]/g)) {
     const role = (m[1] ?? '').toLowerCase();
     const at = m.index ?? 0;
     const enclosing = spans
@@ -421,7 +579,7 @@ function promptChannels(argText: string): PromptChannel[] {
       .sort((a, b) => (a.end - a.start) - (b.end - b.start))[0];
     const objText = enclosing ? argText.slice(enclosing.start, enclosing.end) : '';
     const objOffset = enclosing ? enclosing.start : at;
-    const contentAt = /\bcontent\s*[:=]\s*/.exec(objText);
+    const contentAt = /\bcontent['"`]?\s*[:=]\s*/.exec(objText);
     const text = contentAt
       ? objText.slice((contentAt.index ?? 0) + contentAt[0].length)
       : objText;
@@ -450,13 +608,13 @@ function promptChannels(argText: string): PromptChannel[] {
   }
 
   // Named `system:` / `system_instruction:` parameters (Vercel AI SDK, Gemini).
-  for (const m of argText.matchAll(/\b(?:system|system_instruction|systemInstruction|systemPrompt|system_prompt|instructions)\s*[:=]\s*/g)) {
+  for (const m of argText.matchAll(/\b(?:system|system_instruction|systemInstruction|systemPrompt|system_prompt|instructions)['"`]?\s*[:=]\s*/g)) {
     const offset = (m.index ?? 0) + m[0].length;
     out.push({ channel: 'system', text: argText.slice(offset, offset + 600), offset });
   }
 
   // A single undifferentiated prompt string.
-  for (const m of argText.matchAll(/\b(?:prompt|input|user_prompt|userPrompt|text)\s*[:=]\s*/g)) {
+  for (const m of argText.matchAll(/\b(?:prompt|input|user_prompt|userPrompt|text)['"`]?\s*[:=]\s*/g)) {
     const offset = (m.index ?? 0) + m[0].length;
     out.push({ channel: 'prompt', text: argText.slice(offset, offset + 600), offset });
   }
@@ -680,6 +838,7 @@ export const aiAnalyzer: Analyzer = {
 function providerKeyExposure(ctx: AnalyzerContext): Finding[] {
   const { map } = ctx;
   const out: Finding[] = [];
+  const sdkModules = sdkModulePaths(map);
 
   for (const mod of map.modules.values()) {
     if (!mod.parsed) continue;
@@ -688,7 +847,16 @@ function providerKeyExposure(ctx: AnalyzerContext): Finding[] {
     const clientText = codeText(mod.symbols.map((s) => s.text).join('\n'), mod.language);
 
     // --- a. the SDK is explicitly allowed to run in a browser ---
-    if (/dangerouslyAllowBrowser\s*[:=]\s*true/.test(clientText)) {
+    //
+    // The option must appear as a real object-literal key in a module that can
+    // reach a provider SDK, not merely as text. A source file that discusses the
+    // flag in a string — this analyzer's own prose, a lint rule, a test name —
+    // contains the words but constructs nothing, and matching those would be a
+    // false critical.
+    const declaresBrowserFlag = mod.objectLiterals.some((o) => o.keys.includes('dangerouslyAllowBrowser'));
+    if (declaresBrowserFlag
+      && reachableSdks(mod, sdkModules).length > 0
+      && /dangerouslyAllowBrowser\s*[:=]\s*true/.test(clientText)) {
       out.push(ctx.finding({
         ruleId: 'ai.key.browser_sdk_construction',
         title: 'Model SDK is constructed with browser execution explicitly enabled',
@@ -881,11 +1049,12 @@ function promptInjectionBoundary(ctx: AnalyzerContext, sites: ModelCallSite[]): 
   const { map } = ctx;
   const out: Finding[] = [];
   const seen = new Set<string>();
+  const hasRetrieval = projectHasRetrieval(map);
 
   for (const site of sites) {
     if (site.kind !== 'generation') continue;
     const requestNames = requestDerivedNames(site.scopeText);
-    const retrieved = retrievedNames(site.scopeText, site.mod);
+    const retrieved = retrievedNames(site.scopeText, site.mod, hasRetrieval);
     const channels = promptChannels(site.argText);
     const systemChannels = channels.filter((c) => c.channel === 'system');
     if (systemChannels.length === 0) continue;
@@ -927,6 +1096,10 @@ function promptInjectionBoundary(ctx: AnalyzerContext, sites: ModelCallSite[]): 
       const route = routeForCall(map, site);
       const hasTools = /\b(?:tools|functions|tool_choice|toolChoice|function_call|tool\s*\(|maxSteps)\b/.test(site.argText);
       const severity: Severity = hasTools ? 'critical' : 'high';
+      // The retrieval step was matched by naming convention rather than traced
+      // to a retrieval call, so the claim is weaker and says so.
+      const byConvention = hit.source.startsWith('content assembled');
+      const confidence: Confidence = byConvention ? 'moderate' : 'strong';
 
       const evidence: Evidence[] = [];
       const requestNeedle = [...requestNames.values()][0];
@@ -962,7 +1135,7 @@ function promptInjectionBoundary(ctx: AnalyzerContext, sites: ModelCallSite[]): 
           ? `Request input is interpolated into the system prompt${route ? ` in ${route.method} ${route.path}` : ''}`
           : `Retrieved content is placed in the system prompt${route ? ` in ${route.method} ${route.path}` : ''}`,
         severity,
-        confidence: 'strong',
+        confidence,
         files: [site.mod.path],
         symbol: site.scope?.name,
         evidence,
@@ -1051,7 +1224,7 @@ function undelimitedPrompt(ctx: AnalyzerContext, sites: ModelCallSite[]): Findin
     if (prompts.length === 0) continue;
 
     const requestNames = requestDerivedNames(site.scopeText);
-    const retrieved = retrievedNames(site.scopeText, site.mod);
+    const retrieved = retrievedNames(site.scopeText, site.mod, projectHasRetrieval(map));
 
     for (const channel of prompts) {
       let text = channel.text;
@@ -1317,7 +1490,9 @@ function structuredOutputGap(ctx: AnalyzerContext, sites: ModelCallSite[]): Find
     if (structured) continue;
 
     const parsesLoosely = /JSON\.parse|json\.loads/.test(site.scopeText);
-    const needle = /```json|(?:respond|reply|return|answer|output|format|produce)[^.\n]{0,80}(?:json|JSON)/.exec(site.argText)?.[0] ?? 'JSON';
+    const needle =
+      /```json[^\n]*|(?:respond|reply|return|answer|output|format|produce)[^.\n]{0,80}json|json[^.\n]{0,40}(?:only|format|schema|object|array)/i
+        .exec(site.argText)?.[0] ?? '';
 
     out.push(ctx.finding({
       ruleId: 'ai.output.json_requested_without_structured_mode',
@@ -1653,6 +1828,10 @@ function toolPermissions(ctx: AnalyzerContext): Finding[] {
       const destructive = DESTRUCTIVE_RE.exec(scopeText);
       if (!destructive) continue;
       if (CONFIRMATION_RE.test(scopeText)) continue;
+      const scopeLines = scopeText.split('\n');
+      const destructiveIdx = scopeLines.findIndex((l) => l.includes(destructive[0]));
+      const destructiveLine = (scope?.startLine ?? literal.line) + Math.max(0, destructiveIdx);
+      const destructiveNeedle = destructiveIdx >= 0 ? (scopeLines[destructiveIdx] ?? '').trim() : destructive[0];
 
       const privileged = /\b(?:transfer|refund|charge|payout|withdraw|delete|destroy|drop|truncate|purge|revoke|exec|spawn|unlink)\b/i
         .test(destructive[0]);
@@ -1667,7 +1846,7 @@ function toolPermissions(ctx: AnalyzerContext): Finding[] {
         evidence: [
           map.evidenceLine(mod.path, literal.line,
             'a tool exposed to the model declares both a description and an executable handler'),
-          evidenceFor(map, mod.path, destructive[0], literal.line,
+          evidenceFor(map, mod.path, destructiveNeedle, destructiveLine,
             `the handler reaches ${destructive[0]}(), and no confirmation, approval, or allowlist check appears in the same scope`),
         ],
         explanation:
@@ -1724,7 +1903,7 @@ function retrievalGrounding(ctx: AnalyzerContext, sites: ModelCallSite[]): Findi
     const route = routeForCall(map, site);
     if (!route || !site.scope) continue;
 
-    const retrieved = retrievedNames(site.scopeText, site.mod);
+    const retrieved = retrievedNames(site.scopeText, site.mod, true);
     if (retrieved.size === 0) continue;
 
     // The response body for this handler: does it carry the sources at all?
@@ -1819,7 +1998,7 @@ function userDataPrivacy(ctx: AnalyzerContext, sites: ModelCallSite[]): Finding[
   });
   if (disclosure) return [];
 
-  const provider = candidate.sdks[0] ?? 'a third-party model provider';
+  const provider = providerLabel(candidate.sdks);
   const route = routeForCall(map, candidate);
 
   return [ctx.finding({

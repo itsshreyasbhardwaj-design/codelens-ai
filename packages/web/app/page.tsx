@@ -55,19 +55,6 @@ function ctaStyle(primary: boolean) {
   } as const;
 }
 
-function eyebrow(text: string) {
-  return (
-    <div
-      style={{
-        fontSize: '0.74rem', fontWeight: 700, letterSpacing: '0.09em',
-        textTransform: 'uppercase', color: 'var(--ink-3)', marginBottom: '0.35rem',
-      }}
-    >
-      {text}
-    </div>
-  );
-}
-
 const gridStyle = (min: string) =>
   ({
     display: 'grid',
@@ -161,7 +148,6 @@ function DemoPreview() {
   if (!project || !scan) {
     return (
       <Card>
-        {eyebrow('Sample report')}
         <SectionHeading hint="The demonstration scan is not present in this installation, so there is nothing to preview. No sample figures are shown in its place.">
           Sample report {synthetic}
         </SectionHeading>
@@ -182,7 +168,6 @@ function DemoPreview() {
 
   return (
     <Card>
-      {eyebrow('Sample report')}
       <SectionHeading
         hint={`Real output from a real scan of ${project.name}, a codebase written on purpose to be defective. It is bundled with the project as a demonstration fixture — it is not a customer, and these figures describe nothing but that fixture.`}
       >
@@ -205,7 +190,11 @@ function DemoPreview() {
         </div>
         <Stat label="Findings" value={scan.findings} />
         <Stat label="Critical" value={scan.critical} tone={scan.critical > 0 ? 'critical' : 'good'} />
-        <Stat label="Fix Packs" value={presentable} hint={`${packs.length} generated`} />
+        <Stat
+          label="Fix Packs"
+          value={presentable}
+          hint={packs.length === presentable ? undefined : `${packs.length} generated, ${presentable} passed validation`}
+        />
       </div>
 
       {scan.findings > 0 ? (
@@ -335,7 +324,11 @@ export default function LandingPage() {
         <section aria-labelledby="modules-heading">
           <SectionHeading
             id="modules-heading"
-            hint={`${mods.length} diagnostic modules define what the audit can report. ${implemented.length} ship with a rule set in this release; the rest are categories the report model carries but for which no rule yet exists, and they produce no findings.`}
+            hint={
+              implemented.length === mods.length
+                ? `${mods.length} diagnostic modules define what the audit can report, and all ${mods.length} have a rule set installed. What any one of them finds still depends on the coverage a given scan achieved.`
+                : `${mods.length} diagnostic modules define what the audit can report. ${implemented.length} have a rule set installed; the remaining ${mods.length - implemented.length} are categories the report model carries but for which no rule exists yet, and they produce no findings.`
+            }
           >
             What the audit covers
           </SectionHeading>

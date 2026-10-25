@@ -281,14 +281,7 @@ export function FindingDetail({ finding, currentScanId }: { finding: Finding; cu
   const firstElsewhere = f.firstDetectedScanId !== undefined && f.firstDetectedScanId !== currentScanId;
 
   return (
-    <div
-      style={{
-        borderTop: '1px solid var(--border)',
-        padding: '1rem 0.1rem 0.4rem',
-        display: 'grid',
-        gap: 0,
-      }}
-    >
+    <div style={{ borderTop: '1px solid var(--border)', padding: '1rem 0.1rem 0.4rem', minWidth: 0 }}>
       {/* --------------------------------------------------- assessment --- */}
       <Heading>How this was assessed</Heading>
       <dl style={{ margin: 0 }}>

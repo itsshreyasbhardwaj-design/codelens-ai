@@ -1,14 +1,22 @@
 import type { Coverage, Finding } from './types.ts';
 import { fingerprintFinding } from './ids.ts';
 
-/** Test helper: a complete, valid Finding with overridable fields. */
-export function makeFinding(over: Partial<Finding> = {}): Finding {
+/**
+ * Test helper: a complete, valid Finding with overridable fields.
+ *
+ * `symbol` and `excerpt` are not fields on Finding — they are fingerprint
+ * inputs — but tests need to vary them to produce two findings that differ only
+ * in the code they point at.
+ */
+export function makeFinding(over: Partial<Finding> & { symbol?: string; excerpt?: string } = {}): Finding {
+  // Keep the fingerprint-only inputs out of the returned object.
+  const { symbol: _symbol, excerpt: _excerpt, ...fields } = over;
   const base = {
     ruleId: over.ruleId ?? 'test.rule',
     category: over.category ?? ('security' as const),
     files: over.files ?? ['src/a.ts'],
-    symbol: 'handler',
-    excerpt: 'const x = 1',
+    symbol: over.symbol ?? 'handler',
+    excerpt: over.excerpt ?? 'const x = 1',
   };
   return {
     id: 'TMP-000',
@@ -32,7 +40,7 @@ export function makeFinding(over: Partial<Finding> = {}): Finding {
     relatedFindings: [],
     references: [],
     affectedFeatures: [],
-    ...over,
+    ...fields,
   };
 }
 

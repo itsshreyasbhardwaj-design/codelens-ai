@@ -44,8 +44,14 @@ interface Intent {
   id: string;
   label: string;
   question: string;
-  /** Matched as whole words or whole phrases, case-insensitively. */
-  keywords: string[];
+  /**
+   * Terms distinctive enough that one of them settles the question. "reliability"
+   * belongs here; "risk" does not, because it appears in questions about every
+   * category.
+   */
+  strong: string[];
+  /** Supporting terms. Several are needed before they decide anything. */
+  weak: string[];
 }
 
 /**
@@ -57,58 +63,68 @@ const INTENTS: Intent[] = [
     id: 'auth',
     label: 'How authentication works',
     question: 'How does authentication work in this project?',
-    keywords: ['authentication', 'authenticate', 'authorisation', 'authorization', 'auth', 'login',
-      'log in', 'sign in', 'signin', 'session', 'token', 'jwt', 'password', 'permissions', 'who can access'],
+    strong: ['authentication', 'authenticate', 'authenticated', 'authorisation', 'authorization',
+      'auth', 'authz', 'login', 'log in', 'logged in', 'sign in', 'signin', 'jwt', 'password'],
+    weak: ['session', 'sessions', 'token', 'tokens', 'permissions', 'access control', 'who can access'],
   },
   {
     id: 'architecture',
     label: 'Backend architecture',
     question: 'Explain the backend architecture.',
-    keywords: ['architecture', 'backend', 'back end', 'structure', 'structured', 'components',
-      'how is this built', 'how is it built', 'stack', 'layout', 'design', 'overview', 'models', 'data model'],
+    strong: ['architecture', 'architectural', 'backend', 'back end', 'how is this built',
+      'how is it built', 'how does this fit together'],
+    weak: ['structure', 'structured', 'components', 'stack', 'layout', 'design', 'overview',
+      'models', 'data model', 'built', 'shape'],
   },
   {
     id: 'untested-endpoints',
     label: 'Endpoints without tests',
     question: 'Which API endpoints lack tests?',
-    keywords: ['endpoint', 'endpoints', 'route', 'routes', 'api', 'test', 'tests', 'tested',
-      'untested', 'lack tests', 'no tests', 'without tests', 'test coverage'],
+    strong: ['untested', 'lack tests', 'lacks tests', 'no tests', 'without tests', 'test coverage',
+      'missing tests', 'not tested'],
+    weak: ['endpoint', 'endpoints', 'route', 'routes', 'api', 'test', 'tests', 'tested', 'coverage'],
   },
   {
     id: 'reliability-risks',
     label: 'Reliability risks',
     question: 'What are the most significant reliability risks?',
-    keywords: ['reliability', 'reliable', 'risk', 'risks', 'risky', 'fail', 'fails', 'failure',
-      'break', 'breaks', 'crash', 'outage', 'stability', 'significant', 'robust', 'data loss'],
+    strong: ['reliability', 'reliable', 'data loss', 'data corruption'],
+    weak: ['risk', 'risks', 'risky', 'fail', 'fails', 'failure', 'break', 'breaks', 'crash',
+      'outage', 'stability', 'significant', 'robust', 'wrong'],
   },
   {
     id: 'coupling',
     label: 'Module coupling',
     question: 'Which modules are unnecessarily coupled?',
-    keywords: ['coupled', 'coupling', 'cohesion', 'tangled', 'modules', 'module', 'dependencies',
-      'depends', 'depend', 'relationships', 'spaghetti', 'entangled', 'interdependent'],
+    strong: ['coupled', 'coupling', 'cohesion', 'tangled', 'spaghetti', 'entangled',
+      'interdependent', 'too many dependencies'],
+    weak: ['modules', 'module', 'dependencies', 'depends', 'depend', 'relationships', 'graph'],
   },
   {
     id: 'fix-first',
     label: 'What to fix first',
     question: 'What should I fix first?',
-    keywords: ['fix first', 'first', 'priority', 'priorities', 'prioritise', 'prioritize', 'start',
-      'where do i start', 'most important', 'urgent', 'blocker', 'blocking', 'p0', 'next'],
+    strong: ['fix first', 'where do i start', 'where should i start', 'most important', 'urgent',
+      'blocker', 'p0', 'what next', 'highest priority'],
+    weak: ['first', 'priority', 'priorities', 'prioritise', 'prioritize', 'start', 'blocking',
+      'next', 'fix', 'worst'],
   },
   {
     id: 'scan-diff',
     label: 'Change between the last two scans',
     question: 'What changed between the last two scans?',
-    keywords: ['changed', 'change', 'changes', 'diff', 'compare', 'compared', 'comparison',
-      'since', 'last scan', 'previous scan', 'two scans', 'scans', 'progress', 'improved',
-      'regressed', 'regression', 'worse', 'better'],
+    strong: ['last scan', 'previous scan', 'two scans', 'last two scans', 'scans', 'diff',
+      'compare', 'compared', 'comparison', 'regressed', 'regression'],
+    weak: ['changed', 'change', 'changes', 'since', 'progress', 'improved', 'worse', 'better'],
   },
   {
     id: 'incomplete-features',
     label: 'Incomplete features',
     question: 'Which features are incomplete?',
-    keywords: ['incomplete', 'unfinished', 'half', 'feature', 'features', 'placeholder', 'mock',
-      'mocked', 'stub', 'stubbed', 'partially', 'partial', 'not finished', 'not implemented', 'todo'],
+    strong: ['incomplete', 'unfinished', 'placeholder', 'not implemented', 'not finished',
+      'half built', 'half finished'],
+    weak: ['feature', 'features', 'mock', 'mocked', 'stub', 'stubbed', 'partially', 'partial',
+      'todo', 'done'],
   },
 ];
 
@@ -118,26 +134,34 @@ function escapeRe(s: string): string {
   return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
+function hits(question: string, terms: string[]): number {
+  let n = 0;
+  for (const t of terms) {
+    if (new RegExp(`\\b${escapeRe(t)}\\b`, 'i').test(question)) n++;
+  }
+  return n;
+}
+
 /**
  * Score the question against each intent and take the best.
  *
- * Multi-word phrases score higher than single words, because "lack tests" is a
- * much stronger signal than "tests". Below the threshold nothing is returned:
- * the handler then says what it cannot answer rather than guessing.
+ * One distinctive term settles it; otherwise three supporting terms are needed.
+ * Below that nothing is returned, and the handler says what it cannot answer
+ * instead of picking the closest intent and guessing. Being conservative here is
+ * deliberate: a confidently wrong answer about a codebase is worse than none.
  */
 function matchIntent(question: string): Intent | undefined {
   const q = question.toLowerCase();
   let best: { intent: Intent; score: number } | undefined;
   for (const intent of INTENTS) {
-    let score = 0;
-    for (const kw of intent.keywords) {
-      const re = new RegExp(`\\b${escapeRe(kw)}\\b`, 'i');
-      if (re.test(q)) score += kw.includes(' ') ? 3 : 1;
-    }
+    const strong = hits(q, intent.strong);
+    const weak = hits(q, intent.weak);
+    const score = strong * 5 + weak;
+    const qualifies = strong > 0 || weak >= 3;
+    if (!qualifies) continue;
     if (!best || score > best.score) best = { intent, score };
   }
-  if (!best || best.score < 2) return undefined;
-  return best.intent;
+  return best?.intent;
 }
 
 // ------------------------------------------------------------------ evidence --

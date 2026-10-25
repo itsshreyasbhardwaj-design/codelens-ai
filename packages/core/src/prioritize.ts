@@ -25,7 +25,7 @@ export interface PrioritizedFinding {
   finding: Finding;
   priority: Priority;
   score: number;
-  factors: Record<string, number>;
+  factors: PriorityFactors;
   rationale: string;
   blockedBy: string[];
 }
@@ -42,7 +42,20 @@ const REGRESSION_RISK: Record<EffortBand, number> = {
   trivial: 0.05, small: 0.15, medium: 0.35, large: 0.6, unknown: 0.35,
 };
 
-export const FACTOR_WEIGHTS = {
+/** The fixed set of prioritisation factors, each normalised to 0..1. */
+export interface PriorityFactors {
+  severity: number;
+  confidence: number;
+  userImpact: number;
+  security: number;
+  failureLikelihood: number;
+  dependents: number;
+  effort: number;
+  regressionSafety: number;
+  unblocked: number;
+}
+
+export const FACTOR_WEIGHTS: Record<keyof PriorityFactors, number> = {
   severity: 30,
   confidence: 20,
   userImpact: 12,
@@ -67,7 +80,7 @@ function userImpactScore(f: Finding): number {
 }
 
 export function scoreFinding(f: Finding, ctx: PrioritizationContext = {}): {
-  score: number; factors: Record<string, number>;
+  score: number; factors: PriorityFactors;
 } {
   const sevNorm = 1 - SEVERITY_RANK[f.severity] / 4; // critical=1.0, info=0.0
   const confNorm = CONFIDENCE_WEIGHT[f.confidence];
@@ -79,14 +92,14 @@ export function scoreFinding(f: Finding, ctx: PrioritizationContext = {}): {
   const regressionSafety = 1 - REGRESSION_RISK[f.effort];
   const unblocked = (ctx.blockedBy?.[f.fingerprint]?.length ?? 0) === 0 ? 1 : 0;
 
-  const factors = {
+  const factors: PriorityFactors = {
     severity: sevNorm, confidence: confNorm, userImpact: impact, security,
     failureLikelihood: likelihood, dependents, effort, regressionSafety, unblocked,
   };
 
   let score = 0;
-  for (const [k, w] of Object.entries(FACTOR_WEIGHTS)) {
-    score += (factors as Record<string, number>)[k]! * w;
+  for (const key of Object.keys(FACTOR_WEIGHTS) as Array<keyof PriorityFactors>) {
+    score += factors[key] * FACTOR_WEIGHTS[key];
   }
   return { score: Math.round(score * 100) / 100, factors };
 }
@@ -108,7 +121,7 @@ function band(f: Finding, score: number): Priority {
   return score >= 30 ? 'P2' : 'P3';
 }
 
-function explain(f: Finding, p: Priority, factors: Record<string, number>, blockedBy: string[]): string {
+function explain(f: Finding, p: Priority, factors: PriorityFactors, blockedBy: string[]): string {
   const bits: string[] = [];
   bits.push(`${f.severity} severity with ${f.confidence} confidence`);
   if (factors.security === 1) bits.push('security-relevant');

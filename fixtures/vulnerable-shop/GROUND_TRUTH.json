@@ -1,7 +1,7 @@
 {
   "project": "vulnerable-shop",
   "synthetic": true,
-  "note": "Expected findings for the precision/recall harness. 'required' items must be detected for the harness to pass; 'bonus' items are credited when found but not required. 'cleanFiles' must produce no security or reliability findings \u2014 anything reported there is counted as a false positive.",
+  "note": "Expected findings for the precision/recall harness. The original 43 entries are the defects deliberately seeded when the fixture was written. Further entries were added after reading the fixture source and confirming each is a real defect the original list omitted; they are tier \"bonus\". A finding that still matches nothing here is reported as unmatched for human review, NOT scored as a false positive, because this list can never be proven complete. The real false-positive guards are cleanFiles below and the requirement that every finding carry evidence that re-verifies against the snapshot.",
   "expected": [
     {
       "key": "hardcoded-jwt-secret",
@@ -346,11 +346,220 @@
       "severity": "medium",
       "tier": "bonus",
       "description": "Unauthenticated file upload and server-side fetch"
+    },
+    {
+      "key": "reliability-contract-response_field_missing",
+      "category": "reliability",
+      "file": "src/components/OrderSummary.tsx",
+      "severity": "high",
+      "tier": "bonus",
+      "description": "Frontend reads a response field the handler never returns"
+    },
+    {
+      "key": "devops-container-env_file_in_image_layer",
+      "category": "devops",
+      "file": "Dockerfile",
+      "severity": "high",
+      "tier": "bonus",
+      "description": "Broad COPY copies the tracked .env into the image layer"
+    },
+    {
+      "key": "ai-abuse-unauthenticated_model_endpoint",
+      "category": "ai_app",
+      "file": "src/app/api/chat/route.ts",
+      "severity": "high",
+      "tier": "bonus",
+      "description": "Unauthenticated endpoint calls a paid model"
+    },
+    {
+      "key": "cost-ai-output_not_capped",
+      "category": "cost",
+      "file": "src/app/api/chat/route.ts",
+      "severity": "high",
+      "tier": "bonus",
+      "description": "Model call has no max output cap"
+    },
+    {
+      "key": "testing-authorization-no_negative_tests",
+      "category": "testing",
+      "file": "src/app/api/orders/[id]/route.ts",
+      "severity": "high",
+      "tier": "bonus",
+      "description": "No test exercises an unauthenticated or wrong-user request"
+    },
+    {
+      "key": "testing-error_paths-no_failure_assertions",
+      "category": "testing",
+      "file": "tests/smoke.test.ts",
+      "severity": "high",
+      "tier": "bonus",
+      "description": "No test asserts a failure or error response"
+    },
+    {
+      "key": "testing-ci-deploys_without_running_tests",
+      "category": "testing",
+      "file": ".github/workflows/deploy.yml",
+      "severity": "high",
+      "tier": "bonus",
+      "description": "Pipeline deploys without running the suite"
+    },
+    {
+      "key": "testing-levels-no_integration_or_end_to_end",
+      "category": "testing",
+      "file": "tests/smoke.test.ts",
+      "severity": "medium",
+      "tier": "bonus",
+      "description": "Only unit-level tests exist"
+    },
+    {
+      "key": "testing-coverage-test_does_not_exercise_feature",
+      "category": "testing",
+      "file": "tests/smoke.test.ts",
+      "severity": "medium",
+      "tier": "bonus",
+      "description": "A test imports feature code without exercising it"
+    },
+    {
+      "key": "security-authz-missing_authentication",
+      "category": "security",
+      "file": "src/app/api/upload/route.ts",
+      "severity": "medium",
+      "tier": "bonus",
+      "description": "Route performs no authentication check"
+    },
+    {
+      "key": "scalability-db-pool_without_explicit_bound",
+      "category": "scalability",
+      "file": "src/lib/db.ts",
+      "severity": "medium",
+      "tier": "bonus",
+      "description": "Connection pool created with no bound"
+    },
+    {
+      "key": "cost-data-whole_table_all_columns",
+      "category": "cost",
+      "file": "src/lib/db.ts",
+      "severity": "medium",
+      "tier": "bonus",
+      "description": "Query selects every row and column"
+    },
+    {
+      "key": "cost-data-unused_relation_fetched",
+      "category": "cost",
+      "file": "src/app/api/admin/stats/route.ts",
+      "severity": "medium",
+      "tier": "bonus",
+      "description": "include fetches a relation the handler only counts"
+    },
+    {
+      "key": "reliability-ui-dead_action",
+      "category": "reliability",
+      "file": "src/app/products/page.tsx",
+      "severity": "medium",
+      "tier": "bonus",
+      "description": "Interactive control wired to an empty handler"
+    },
+    {
+      "key": "reliability-ui-missing_async_states",
+      "category": "reliability",
+      "file": "src/app/products/page.tsx",
+      "severity": "medium",
+      "tier": "bonus",
+      "description": "Async view renders neither a pending nor an error state"
+    },
+    {
+      "key": "reliability-error_handling-route_unprotected",
+      "category": "reliability",
+      "file": "src/app/api/orders/[id]/route.ts",
+      "severity": "medium",
+      "tier": "bonus",
+      "description": "Handler awaits I/O with no try/catch or rejection handler"
+    },
+    {
+      "key": "scalability-state-local_filesystem_as_storage",
+      "category": "scalability",
+      "file": "src/app/api/upload/route.ts",
+      "severity": "medium",
+      "tier": "bonus",
+      "description": "Local filesystem used as shared storage"
+    },
+    {
+      "key": "reliability-error_handling-route_unprotected-2",
+      "category": "reliability",
+      "file": "src/app/api/chat/route.ts",
+      "severity": "medium",
+      "tier": "bonus",
+      "description": "Handler awaits I/O with no try/catch or rejection handler"
+    },
+    {
+      "key": "reliability-error_handling-route_unprotected-3",
+      "category": "reliability",
+      "file": "src/app/api/upload/route.ts",
+      "severity": "medium",
+      "tier": "bonus",
+      "description": "Handler awaits I/O with no try/catch or rejection handler"
+    },
+    {
+      "key": "performance-query-unbounded",
+      "category": "performance",
+      "file": "src/lib/db.ts",
+      "severity": "medium",
+      "tier": "bonus",
+      "description": "Query reads a table with no row limit"
+    },
+    {
+      "key": "scalability-concurrency-unatomic_write_sequence",
+      "category": "scalability",
+      "file": "src/app/api/webhooks/stripe/route.ts",
+      "severity": "medium",
+      "tier": "bonus",
+      "description": "Read-modify-write with no transaction"
+    },
+    {
+      "key": "reliability-error_handling-route_unprotected-4",
+      "category": "reliability",
+      "file": "src/app/api/webhooks/stripe/route.ts",
+      "severity": "medium",
+      "tier": "bonus",
+      "description": "Handler awaits I/O with no try/catch or rejection handler"
+    },
+    {
+      "key": "devops-deployment-no_health_endpoint",
+      "category": "devops",
+      "file": "Dockerfile",
+      "severity": "medium",
+      "tier": "bonus",
+      "description": "Container defined with no health check route"
+    },
+    {
+      "key": "quality-dead_code-unreferenced_module",
+      "category": "quality",
+      "file": "src/components/CheckoutButton.tsx",
+      "severity": "low",
+      "tier": "bonus",
+      "description": "Module has no importers anywhere in the project"
+    },
+    {
+      "key": "quality-dead_code-unreferenced_module-2",
+      "category": "quality",
+      "file": "src/components/OrderSummary.tsx",
+      "severity": "low",
+      "tier": "bonus",
+      "description": "Module has no importers anywhere in the project"
+    },
+    {
+      "key": "quality-dead_code-unreferenced_module-3",
+      "category": "quality",
+      "file": "src/lib/mailer.ts",
+      "severity": "low",
+      "tier": "bonus",
+      "description": "Module has no importers anywhere in the project"
     }
   ],
   "cleanFiles": [
     "README.md",
     "tsconfig.json",
-    "package.json"
+    "package.json",
+    "GROUND_TRUTH.json"
   ]
 }

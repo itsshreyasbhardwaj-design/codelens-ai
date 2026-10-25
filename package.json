@@ -15,7 +15,8 @@
     "test:watch": "node --test --watch --experimental-strip-types \"packages/**/*.test.ts\"",
     "dev": "pnpm --filter @codelens/web dev",
     "build:web": "pnpm --filter @codelens/web build",
-    "verify": "pnpm typecheck && pnpm test"
+    "verify": "pnpm typecheck && pnpm test",
+    "sync:py": "node --experimental-strip-types scripts/sync-py.ts"
   },
   "devDependencies": {
     "@types/node": "^22.10.5",

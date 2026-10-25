@@ -8,6 +8,7 @@ import { scalabilityAnalyzer } from './scalability.ts';
 import { testingAnalyzer } from './testing.ts';
 import { devopsAnalyzer } from './devops.ts';
 import { costAnalyzer } from './cost.ts';
+import { aiAnalyzer } from './ai.ts';
 
 /**
  * The analyzer registry.
@@ -26,4 +27,5 @@ export const ALL_ANALYZERS: Analyzer[] = [
   testingAnalyzer,
   devopsAnalyzer,
   costAnalyzer,
+  aiAnalyzer,
 ];

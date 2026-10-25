@@ -98,7 +98,17 @@ function PageFrame({ projectId, children }: { projectId: string; children: React
   return (
     <>
       <TopBar tabs={projectTabs(projectId)} current={`${base}/findings`} context={projectId} />
-      <Shell>{children}</Shell>
+      <Shell>
+        {/*
+          A grid column of `minmax(0, 1fr)` rather than the default `auto`: a
+          code excerpt or a long path must scroll inside its own box instead of
+          widening the page, which is what forces a horizontal scrollbar on a
+          narrow screen.
+        */}
+        <div style={{ display: 'grid', gap: '1.25rem', gridTemplateColumns: 'minmax(0, 1fr)' }}>
+          {children}
+        </div>
+      </Shell>
     </>
   );
 }

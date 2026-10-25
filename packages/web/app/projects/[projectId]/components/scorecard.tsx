@@ -153,7 +153,7 @@ export function Scorecard({ overall, assessedWeight, dimensions }: {
                 <GradePill grade={letterGrade(overall)} />
               </div>
             </div>
-            <div style={{ flex: 1, minWidth: 160 }}>
+            <div style={{ flex: 1, minWidth: '12rem' }}>
               <ScoreBar value={overall} />
               <p style={{ margin: '0.4rem 0 0', fontSize: '0.82rem', color: 'var(--ink-2)', lineHeight: 1.5 }}>
                 Graded on {assessedPct}% of the configured weight

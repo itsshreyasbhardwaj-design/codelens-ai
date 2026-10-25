@@ -172,11 +172,18 @@ export function evaluate(findings: Finding[], gt: GroundTruth): EvalResult {
 
   const unmatched = findings.filter((f) => !usedFindings.has(f));
 
+  // A finding is a false positive on a clean file when it is ABOUT that file,
+  // not merely when it mentions it. A cross-file finding legitimately cites a
+  // second location as supporting evidence — an "undocumented variable" finding
+  // points at the env template precisely because the declaration is missing
+  // there — and treating that as a false positive would penalise the product's
+  // most valuable findings.
   const cleanSet = new Set(gt.cleanFiles);
   const falsePositivesOnCleanFiles = findings.filter(
     (f) =>
       (f.category === 'security' || f.category === 'reliability') &&
-      f.files.some((p) => cleanSet.has(p)),
+      f.files.length > 0 &&
+      cleanSet.has(f.files[0]!),
   );
 
   const findingsWithUnresolvedEvidence = findings.filter(

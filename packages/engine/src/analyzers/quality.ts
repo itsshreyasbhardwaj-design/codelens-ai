@@ -1421,11 +1421,33 @@ function moduleScopeClients(ctx: AnalyzerContext, idx: QIndex): Finding[] {
     const names = constructed.map((s) => s.name).join(', ');
     const importerList = [...importers].slice(0, 5);
 
+    /**
+     * An EXPORTED module-scope client in a dedicated data-access module is the
+     * pattern several frameworks document — Prisma tells Next.js users to do
+     * exactly this, to avoid exhausting connections across hot reloads. The
+     * testability observation still holds, but reporting the framework's own
+     * recommended shape at medium severity would fire on almost every real
+     * project of that stack, and a rule that flags idiomatic code costs more
+     * trust than the finding is worth.
+     *
+     * So the grade follows how substitutable the client actually is:
+     *  - exported from a dedicated client module: a deliberate shared instance,
+     *    reported as a low-severity observation;
+     *  - not exported: hidden state with no way to substitute it at all, which
+     *    is the case this rule is really about.
+     */
+    const allExported = constructed.every((s) => s.exported);
+    const dedicatedClientModule = /(?:^|\/)(?:db|database|client|prisma|redis|cache|storage|supabase|mongo|sql)\.[cm]?[jt]s$/.test(mod.path)
+      || /(?:^|\/)lib\/(?:db|database|client|prisma)\b/.test(mod.path);
+    const idiomaticSingleton = allExported && dedicatedClientModule;
+
     out.push(ctx.finding({
       ruleId: 'quality.testability.module_scope_external_client',
-      title: `${mod.path} constructs ${names} at import time, with no seam for tests`,
-      severity: 'medium',
-      confidence: 'strong',
+      title: idiomaticSingleton
+        ? `${mod.path} exports ${names} as an import-time singleton, which leaves tests no seam`
+        : `${mod.path} constructs ${names} at import time, with no seam for tests`,
+      severity: idiomaticSingleton ? 'low' : 'medium',
+      confidence: idiomaticSingleton ? 'moderate' : 'strong',
       detectionSource: 'graph',
       files: [mod.path],
       symbol: constructed[0]!.name,
@@ -1440,6 +1462,10 @@ function moduleScopeClients(ctx: AnalyzerContext, idx: QIndex): Finding[] {
         complete: true,
       },
       explanation:
+        (idiomaticSingleton
+          ? `This is the shared-instance pattern several frameworks recommend for a dedicated client module, so it is reported as an observation rather than a defect. `
+          : '') +
+        
         `${mod.path} creates ${names} as a module-scope value, and ${importers.size} module(s) import this file. Because the ` +
         'construction happens on import rather than on first use, every one of those modules — and anything that imports them — runs ' +
         'it merely by being loaded. There is no exported factory and nothing is passed in, so there is no point at which a caller or a ' +

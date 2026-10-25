@@ -242,6 +242,18 @@ function evidenceLabel(e: GraphEdgeEvidence): string {
   return e.startLine ? `${e.file}:${e.startLine}` : e.file;
 }
 
+/**
+ * Deep link to one finding on the findings surface.
+ *
+ * That page filters from `?q=`, which it matches against the display id among
+ * other fields, and anchors each card as `finding-<displayId>`. Both were
+ * verified against the running application rather than assumed.
+ */
+function findingHref(projectId: string, displayId: string): string {
+  const base = `/projects/${encodeURIComponent(projectId)}/findings`;
+  return `${base}?q=${encodeURIComponent(displayId)}#finding-${encodeURIComponent(displayId)}`;
+}
+
 // -------------------------------------------------------------- the surface --
 
 export function ArchitectureExplorer({
@@ -614,22 +626,7 @@ export function ArchitectureExplorer({
                 </marker>
               </defs>
 
-              {/* band labels */}
-              {layout.headers.map((h) => (
-                <text
-                  key={h.id}
-                  x={PAD}
-                  y={h.y + 13}
-                  fontSize={11}
-                  fontWeight={650}
-                  fill="var(--ink-3)"
-                  style={{ textTransform: 'uppercase', letterSpacing: '0.06em' }}
-                >
-                  {h.label} ({h.count})
-                </text>
-              ))}
-
-              {/* edges first, so nodes sit on top */}
+              {/* edges first, so band labels and nodes sit on top */}
               {edgeGeometry.map(({ edge, d, lx, ly }) => {
                 const incident = selected ? edge.from === selected || edge.to === selected : false;
                 const inferred = edge.provenance !== 'detected';
@@ -673,6 +670,33 @@ export function ArchitectureExplorer({
                         </text>
                       </>
                     ) : null}
+                  </g>
+                );
+              })}
+
+              {/* band labels, drawn over the edges that cross them so they stay legible */}
+              {layout.headers.map((h) => {
+                const text = `${h.label} (${h.count})`;
+                return (
+                  <g key={h.id}>
+                    <rect
+                      x={PAD - 4}
+                      y={h.y + 1}
+                      width={text.length * 6.6 + 8}
+                      height={16}
+                      rx={3}
+                      fill="var(--surface-2)"
+                    />
+                    <text
+                      x={PAD}
+                      y={h.y + 13}
+                      fontSize={11}
+                      fontWeight={650}
+                      fill="var(--ink-3)"
+                      style={{ textTransform: 'uppercase', letterSpacing: '0.06em' }}
+                    >
+                      {text}
+                    </text>
                   </g>
                 );
               })}
@@ -937,10 +961,7 @@ export function ArchitectureExplorer({
                         <ConfidencePill confidence={f.confidence} />
                         <StatusPill status={f.status} />
                       </div>
-                      <Link
-                        href={`/projects/${encodeURIComponent(projectId)}/findings/${encodeURIComponent(f.displayId)}`}
-                        style={{ fontSize: '0.88rem' }}
-                      >
+                      <Link href={findingHref(projectId, f.displayId)} style={{ fontSize: '0.88rem' }}>
                         <span style={{ fontFamily: 'var(--font-mono)', fontSize: '0.8rem' }}>{f.displayId}</span>{' '}
                         {f.title}
                       </Link>
