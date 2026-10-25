@@ -217,8 +217,17 @@ interface ModelCallSite {
   scope?: SymbolInfo;
   /** Comment-free text of that scope. */
   scopeText: string;
-  /** Comment-free argument text of the call. */
+  /** Comment-free argument text of the call, or the enclosing body when the parser captured no arguments. */
   argText: string;
+  /** The file line `argText` starts on, for attributing a match to a line. */
+  argBaseLine: number;
+  /**
+   * True when the arguments were not available from the AST and the enclosing
+   * function body was read instead. Some language front ends record a call's
+   * callee without its argument text; falling back keeps the prompt rules
+   * working there, at the cost of a wider window, which the findings state.
+   */
+  argsFromScope: boolean;
   /** Comment-free text of the SDK client construction in this module, when found. */
   clientText: string;
   kind: 'embedding' | 'generation';
@@ -322,12 +331,17 @@ function collectModelCalls(map: RepoMap): ModelCallSite[] {
       const kind = classifyModelCall(call.callee, { clients, langchainish });
       if (!kind) continue;
       const scope = enclosingSymbol(mod, call);
+      const scopeText = scope ? codeText(scope.text, mod.language) : '';
+      const ownArgs = codeText(call.args.join(', '), mod.language).trim();
+      const argsFromScope = ownArgs.length === 0 && scopeText.length > 0;
       out.push({
         mod,
         call,
         scope,
-        scopeText: scope ? codeText(scope.text, mod.language) : '',
-        argText: codeText(call.args.join(', '), mod.language),
+        scopeText,
+        argText: argsFromScope ? scopeText : ownArgs,
+        argBaseLine: argsFromScope ? (scope?.startLine ?? call.line) : call.line,
+        argsFromScope,
         clientText,
         kind,
         sdks,
@@ -695,7 +709,10 @@ function projectHas(map: RepoMap, re: RegExp): { file: string; line: number } | 
       if (re.test(codeText(sym.text, mod.language))) return { file: mod.path, line: sym.startLine };
     }
     for (const lit of mod.stringLiterals) {
-      if (re.test(lit.value)) return { file: mod.path, line: lit.line };
+      // Short literals are configuration values and identifiers; long ones are
+      // prose, and a sentence that merely discusses throttling or redaction is
+      // not evidence that either is implemented.
+      if (lit.value.length <= 60 && re.test(lit.value)) return { file: mod.path, line: lit.line };
     }
   }
   for (const f of map.files) {
@@ -760,6 +777,9 @@ function outputBindings(site: ModelCallSite): string[] {
     }
     const simple = /(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*(?::[^=\n]+)?=/.exec(line);
     if (simple?.[1]) names.push(simple[1]);
+    // A bare assignment, as Python and plain reassignment produce.
+    const bare = /^[ \t]*([A-Za-z_$][\w$]*)\s*(?::[^=\n]+)?=[^=]/.exec(line);
+    if (bare?.[1]) names.push(bare[1]);
   }
   return [...new Set(names)];
 }
@@ -1088,7 +1108,7 @@ function promptInjectionBoundary(ctx: AnalyzerContext, sites: ModelCallSite[]): 
       }
       if (!hit) continue;
 
-      const channelLine = lineOfOffset(site.call.line, site.argText, channel.offset);
+      const channelLine = lineOfOffset(site.argBaseLine, site.argText, channel.offset);
       const key = `${site.mod.path}:${channelLine}:${origin}`;
       if (seen.has(key)) continue;
       seen.add(key);
@@ -1099,7 +1119,9 @@ function promptInjectionBoundary(ctx: AnalyzerContext, sites: ModelCallSite[]): 
       // The retrieval step was matched by naming convention rather than traced
       // to a retrieval call, so the claim is weaker and says so.
       const byConvention = hit.source.startsWith('content assembled');
-      const confidence: Confidence = byConvention ? 'moderate' : 'strong';
+      const widenedWindow = site.argsFromScope
+        && sites.filter((s) => s.mod.path === site.mod.path && s.scope?.name === site.scope?.name).length > 1;
+      const confidence: Confidence = byConvention || widenedWindow ? 'moderate' : 'strong';
 
       const evidence: Evidence[] = [];
       const requestNeedle = [...requestNames.values()][0];
@@ -1116,13 +1138,16 @@ function promptInjectionBoundary(ctx: AnalyzerContext, sites: ModelCallSite[]): 
         evidence.push(evidenceFor(map, site.mod.path, buildNeedle, buildLine,
           'the privileged instruction text is assembled here with the untrusted value interpolated into it'));
       }
+      const windowNote = site.argsFromScope
+        ? ' (read from the enclosing function body, since the parser recorded no argument text for this call)'
+        : '';
       evidence.push(evidenceFor(
         map, site.mod.path,
         firstMeaningfulLine(channel.text),
         channelLine,
-        origin === 'request'
+        (origin === 'request'
           ? `request-derived value \`${hit.expr}\` is interpolated into the content of a role:'system' message`
-          : `retrieved content \`${hit.expr}\` is placed inside the content of a role:'system' message`,
+          : `retrieved content \`${hit.expr}\` is placed inside the content of a role:'system' message`) + windowNote,
       ));
       evidence.push(map.evidenceLine(site.mod.path, site.call.line,
         `the assembled messages are sent to the provider by ${site.call.callee}()`));
@@ -1238,7 +1263,7 @@ function undelimitedPrompt(ctx: AnalyzerContext, sites: ModelCallSite[]): Findin
       if (!hit) continue;
       if (DELIMITER_RE.test(text) && HIERARCHY_RE.test(text)) continue;
 
-      const line = lineOfOffset(site.call.line, site.argText, channel.offset);
+      const line = lineOfOffset(site.argBaseLine, site.argText, channel.offset);
       const missing = DELIMITER_RE.test(text)
         ? 'the untrusted text is fenced but the prompt never states that content inside the fence is data rather than instructions'
         : 'the untrusted text is concatenated into the instruction string with no delimiter and no instruction-hierarchy statement';
@@ -1403,18 +1428,32 @@ function outputHandling(ctx: AnalyzerContext, sites: ModelCallSite[]): Finding[]
     let responseLine: number | undefined;
     let responseNeedle: string | undefined;
     for (const call of site.mod.calls) {
-      if (call.line < site.scope.startLine || call.line > site.scope.endLine) continue;
+      // A response is produced after the generation, and a request reader such
+      // as `req.json()` is not a response even though its callee ends in json.
+      if (call.line < site.call.line || call.line > site.scope.endLine) continue;
+      if (/^(?:req|request|ctx|context|event)\b/.test(call.callee)) continue;
       if (!/(?:^|\.)(?:json|send|jsonify|write|end|toDataStreamResponse|toTextStreamResponse|toAIStreamResponse)$/.test(call.callee)
         && !/Response$/.test(call.callee)) continue;
       const argText = codeText(call.args.join(', '), site.mod.language);
-      if (bindings.length > 0 && !referencesAny(argText, bindings) && call.line !== site.call.line) continue;
+      if (bindings.length > 0 && argText.length > 0
+        && !referencesAny(argText, bindings) && call.line !== site.call.line) continue;
       responseLine = call.line;
       responseNeedle = argText.split('\n')[0];
       break;
     }
-    // A handler that returns the call's result directly still reaches the client.
-    if (responseLine === undefined && new RegExp(`return\\s+(?:await\\s+)?[^;\\n]*${site.call.callee.split('.').pop()}`).test(site.scopeText)) {
-      responseLine = site.call.line;
+    // A handler that returns the value directly — a bare `return` of a dict or
+    // object, as Python frameworks use — still reaches the client.
+    if (responseLine === undefined) {
+      const lines = site.scopeText.split('\n');
+      for (let i = site.call.line - site.scope.startLine; i < lines.length; i++) {
+        const text = lines[i] ?? '';
+        if (!/\breturn\b/.test(text)) continue;
+        if (bindings.length > 0 && !referencesAny(text, bindings)) continue;
+        if (bindings.length === 0 && !new RegExp(site.call.callee.split('.').pop() ?? '').test(text)) continue;
+        responseLine = site.scope.startLine + i;
+        responseNeedle = text.trim();
+        break;
+      }
     }
     if (responseLine === undefined) continue;
 
@@ -1714,12 +1753,13 @@ function endpointExposure(ctx: AnalyzerContext, sites: ModelCallSite[]): Finding
       map.evidenceLine(site.mod.path, site.call.line, 'each accepted request issues a billable provider call'),
     ];
     if (quotaSomewhere) {
-      evidence.push({
-        file: projectRateLimit!.file,
-        startLine: projectRateLimit!.line,
-        note: 'rate-limiting machinery exists in the project; confirm whether it covers this route before acting',
-        verified: true,
-      });
+      // Resolve this pointer through the map rather than asserting it: evidence
+      // that does not locate real code must not claim to be verified, and a
+      // match in a string literal can point at a line that carries nothing a
+      // reader could check.
+      const quotaEvidence = map.evidenceLine(projectRateLimit!.file, projectRateLimit!.line,
+        'rate-limiting machinery exists in the project; confirm whether it covers this route before acting');
+      if (quotaEvidence.verified && (quotaEvidence.excerpt ?? '').length > 0) evidence.push(quotaEvidence);
     }
 
     out.push(ctx.finding({
@@ -1915,6 +1955,18 @@ function retrievalGrounding(ctx: AnalyzerContext, sites: ModelCallSite[]): Findi
     if (citesSources) continue;
 
     const retrievalName = [...retrieved.keys()][0]!;
+    // Point the evidence at the lines that carry the claim: where the content
+    // was assembled, and where the response leaves without it. The enclosing
+    // symbol's first and last lines are a brace and a signature, which prove
+    // nothing to a reader.
+    const scopeLines = site.scopeText.split('\n');
+    const callOffset = Math.max(0, site.call.line - site.scope.startLine);
+    const retrievalIdx = scopeLines.findIndex((l) => new RegExp(`\\b${retrievalName}\\b[^=\n]*=`).test(l));
+    const retrievalLine = site.scope.startLine + Math.max(0, retrievalIdx);
+    const retrievalNeedle = retrievalIdx >= 0 ? (scopeLines[retrievalIdx] ?? '').trim() : retrievalName;
+    const returnIdx = scopeLines.findIndex((l, i) => i >= callOffset && /\breturn\b/.test(l));
+    const responseLine = returnIdx >= 0 ? site.scope.startLine + returnIdx : site.scope.endLine;
+    const responseNeedle = returnIdx >= 0 ? (scopeLines[returnIdx] ?? '').trim() : '';
 
     out.push(ctx.finding({
       ruleId: 'ai.grounding.answer_without_sources',
@@ -1924,18 +1976,18 @@ function retrievalGrounding(ctx: AnalyzerContext, sites: ModelCallSite[]): Findi
       files: [site.mod.path],
       symbol: site.scope.name,
       evidence: [
-        evidenceFor(map, site.mod.path, retrievalName, site.scope.startLine,
+        evidenceFor(map, site.mod.path, retrievalNeedle, retrievalLine,
           'retrieved content is assembled here and placed in the prompt'),
         map.evidenceLine(site.mod.path, site.call.line, 'the model produces an answer from that content'),
-        map.evidenceLine(site.mod.path, site.scope.endLine,
+        evidenceFor(map, site.mod.path, responseNeedle, responseLine,
           `the response body (${route.responseShape ?? 'shape not resolvable'}) carries no source, citation, or document-identifier field`),
       ],
       trace: {
         kind: 'frontend_backend_contract',
         steps: [
-          { file: site.mod.path, symbol: site.scope.name, line: site.scope.startLine, detail: `content is retrieved into \`${retrievalName}\`` },
+          { file: site.mod.path, symbol: site.scope.name, line: retrievalLine, detail: `content is retrieved into \`${retrievalName}\`` },
           { file: site.mod.path, line: site.call.line, symbol: site.scope.name, detail: 'that content is used as grounding for a generated answer' },
-          { file: site.mod.path, line: site.scope.endLine, detail: 'the response returns the answer alone, with no reference to the retrieved documents' },
+          { file: site.mod.path, line: responseLine, detail: 'the response returns the answer alone, with no reference to the retrieved documents' },
         ],
         complete: true,
       },
@@ -2012,7 +2064,7 @@ function userDataPrivacy(ctx: AnalyzerContext, sites: ModelCallSite[]): Finding[
       map.evidenceLine(candidate.mod.path, candidate.call.line,
         `content taken from the request is sent to ${provider} by ${candidate.call.callee}()`),
       map.evidenceLine(candidate.mod.path, candidate.scope?.startLine ?? candidate.call.line,
-        'no redaction, masking, or minimisation step appears between reading the request and issuing the provider call, and none was found anywhere in the project'),
+        'the handler starts here: no redaction, masking, or minimisation step appears between this point and the provider call, and no such step was found anywhere in the project'),
     ],
     explanation:
       `Text submitted by users is forwarded to ${provider} as part of the prompt. Nothing in the project removes, masks, or minimises ` +

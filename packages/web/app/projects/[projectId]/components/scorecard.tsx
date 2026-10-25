@@ -181,6 +181,13 @@ export function Scorecard({ overall, assessedWeight, dimensions }: {
         </div>
       ) : null}
 
+      {dimensions.length === 0 ? (
+        <p style={{ margin: 0, color: 'var(--ink-2)', lineHeight: 1.6 }}>
+          This scan recorded no dimension scores at all, so there is nothing to grade in any category. That is
+          an absence of assessment, not a clean result.
+        </p>
+      ) : null}
+
       <ul
         style={{
           margin: 0, padding: 0, listStyle: 'none',

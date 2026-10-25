@@ -98,6 +98,22 @@ mid-run (in which case the warning says how many investigations were skipped).
 **A Fix Pack is missing from the roadmap.** It failed validation and was
 withheld. The reason is in the `fix_pack_generation` stage warnings.
 
+## The database is three files, not one
+
+In WAL mode SQLite keeps `codelens.db`, `codelens.db-wal` and `codelens.db-shm`.
+They are one unit. Deleting or copying only `codelens.db` leaves a stale journal
+beside a fresh database, and reads then return nothing with no error — the
+symptom is an empty dashboard after a scan that clearly succeeded.
+
+```bash
+# Correct: remove or move all three
+rm -f .codelens/codelens.db .codelens/codelens.db-wal .codelens/codelens.db-shm
+```
+
+A clean process exit checkpoints the WAL and removes the sidecars, so a database
+at rest is usually a single file. Sidecars present means a process is using it or
+was killed while using it.
+
 ## Data retention and deletion
 
 Deleting a project cascades to its snapshots, files, scans, stages, findings,

@@ -238,6 +238,20 @@ function edgeId(e: GraphEdge): string {
   return `${e.from}→${e.to}→${e.kind}`;
 }
 
+/**
+ * Wrapper for anything that scrolls sideways — the diagram and the tables.
+ *
+ * `Shell` lays its children out in a grid, and a grid item's default
+ * `min-width: auto` lets its widest content set the track width. Without this,
+ * a 1400px diagram stretches the whole page and every heading beside it, which
+ * is exactly the horizontal page scroll a 380px viewport must not have.
+ * `width: 0` removes this subtree's intrinsic contribution; `min-width: 100%`
+ * then fills whatever width the page actually resolved to.
+ */
+function FitWidth({ children }: { children: ReactNode }) {
+  return <div style={{ width: 0, minWidth: '100%' }}>{children}</div>;
+}
+
 function evidenceLabel(e: GraphEdgeEvidence): string {
   return e.startLine ? `${e.file}:${e.startLine}` : e.file;
 }
@@ -598,15 +612,16 @@ export function ArchitectureExplorer({
             Clear the filters above to see the whole graph again.
           </EmptyState>
         ) : (
-          <div
-            style={{
-              overflowX: 'auto',
-              border: '1px solid var(--border)',
-              borderRadius: 8,
-              background: 'var(--surface-2)',
-            }}
-          >
-            <svg
+          <FitWidth>
+            <div
+              style={{
+                overflowX: 'auto',
+                border: '1px solid var(--border)',
+                borderRadius: 8,
+                background: 'var(--surface-2)',
+              }}
+            >
+              <svg
               width={layout.width}
               height={layout.height}
               viewBox={`0 0 ${layout.width} ${layout.height}`}
@@ -784,8 +799,9 @@ export function ArchitectureExplorer({
                   </g>
                 );
               })}
-            </svg>
-          </div>
+              </svg>
+            </div>
+          </FitWidth>
         )}
 
         {/* ---- legend ---- */}
@@ -1004,21 +1020,23 @@ export function ArchitectureExplorer({
             No relationships were extracted, so coupling cannot be ranked.
           </p>
         ) : (
-          <Table head={['Component', 'Kind', 'Incoming', 'Outgoing', 'Total']} caption="Components ranked by relationship count">
-            {mostCoupled.map(({ node, d, total }) => (
-              <tr key={node.key}>
-                <Td>
-                  <RowSelect name={node.name} onClick={() => select(node.key)} selected={selected === node.key} />
-                </Td>
-                <Td>{kindLabel(node.kind)}</Td>
-                <Td nowrap>{d.in}</Td>
-                <Td nowrap>{d.out}</Td>
-                <Td nowrap>
-                  <strong>{total}</strong>
-                </Td>
-              </tr>
-            ))}
-          </Table>
+          <FitWidth>
+            <Table head={['Component', 'Kind', 'Incoming', 'Outgoing', 'Total']} caption="Components ranked by relationship count">
+              {mostCoupled.map(({ node, d, total }) => (
+                <tr key={node.key}>
+                  <Td>
+                    <RowSelect name={node.name} onClick={() => select(node.key)} selected={selected === node.key} />
+                  </Td>
+                  <Td>{kindLabel(node.kind)}</Td>
+                  <Td nowrap>{d.in}</Td>
+                  <Td nowrap>{d.out}</Td>
+                  <Td nowrap>
+                    <strong>{total}</strong>
+                  </Td>
+                </tr>
+              ))}
+            </Table>
+          </FitWidth>
         )}
       </Card>
 
@@ -1031,36 +1049,38 @@ export function ArchitectureExplorer({
             No relationship to an external service was extracted from this scan.
           </p>
         ) : (
-          <Table
-            head={['From', 'Relationship', 'External service', 'Provenance', 'Evidence']}
-            caption="Relationships that cross into an external service"
-          >
-            {boundaries.map((e) => {
-              const from = byKey.get(e.from);
-              const to = byKey.get(e.to);
-              return (
-                <tr key={edgeId(e)}>
-                  <Td>
-                    {from ? <RowSelect name={from.name} onClick={() => select(from.key)} selected={selected === from.key} /> : e.from}
-                  </Td>
-                  <Td nowrap>{relLabel(e.kind)}</Td>
-                  <Td>
-                    {to ? <RowSelect name={to.name} onClick={() => select(to.key)} selected={selected === to.key} /> : e.to}
-                  </Td>
-                  <Td nowrap>
-                    {e.provenance === 'detected' ? <Tag tone="good">detected</Tag> : <Tag tone="warn">inferred</Tag>}
-                  </Td>
-                  <Td mono>
-                    {e.evidence.length === 0 ? (
-                      <span style={{ color: 'var(--ink-3)' }}>none recorded</span>
-                    ) : (
-                      e.evidence.map((ev) => <div key={`${ev.file}:${ev.startLine ?? ''}`}>{evidenceLabel(ev)}</div>)
-                    )}
-                  </Td>
-                </tr>
-              );
-            })}
-          </Table>
+          <FitWidth>
+            <Table
+              head={['From', 'Relationship', 'External service', 'Provenance', 'Evidence']}
+              caption="Relationships that cross into an external service"
+            >
+              {boundaries.map((e) => {
+                const from = byKey.get(e.from);
+                const to = byKey.get(e.to);
+                return (
+                  <tr key={edgeId(e)}>
+                    <Td>
+                      {from ? <RowSelect name={from.name} onClick={() => select(from.key)} selected={selected === from.key} /> : e.from}
+                    </Td>
+                    <Td nowrap>{relLabel(e.kind)}</Td>
+                    <Td>
+                      {to ? <RowSelect name={to.name} onClick={() => select(to.key)} selected={selected === to.key} /> : e.to}
+                    </Td>
+                    <Td nowrap>
+                      {e.provenance === 'detected' ? <Tag tone="good">detected</Tag> : <Tag tone="warn">inferred</Tag>}
+                    </Td>
+                    <Td mono>
+                      {e.evidence.length === 0 ? (
+                        <span style={{ color: 'var(--ink-3)' }}>none recorded</span>
+                      ) : (
+                        e.evidence.map((ev) => <div key={`${ev.file}:${ev.startLine ?? ''}`}>{evidenceLabel(ev)}</div>)
+                      )}
+                    </Td>
+                  </tr>
+                );
+              })}
+            </Table>
+          </FitWidth>
         )}
       </Card>
 
@@ -1076,35 +1096,37 @@ export function ArchitectureExplorer({
         <h3 style={{ margin: '0 0 0.5rem', fontSize: '0.9rem', fontWeight: 650 }}>
           Components ({nodes.length})
         </h3>
-        <Table
-          head={['Component', 'Kind', 'Provenance', 'In', 'Out', 'Files', 'Summary']}
-          caption="Every component in the graph"
-        >
-          {nodes.map((n) => {
-            const d = degree.get(n.key) ?? { in: 0, out: 0 };
-            return (
-              <tr key={n.key}>
-                <Td>
-                  <RowSelect name={n.name} onClick={() => select(n.key)} selected={selected === n.key} />
-                </Td>
-                <Td nowrap>{kindLabel(n.kind)}</Td>
-                <Td nowrap>
-                  {n.provenance === 'detected' ? <Tag tone="good">detected</Tag> : <Tag tone="warn">inferred</Tag>}
-                </Td>
-                <Td nowrap>{d.in}</Td>
-                <Td nowrap>{d.out}</Td>
-                <Td mono>
-                  {n.files.length === 0 ? (
-                    <span style={{ color: 'var(--ink-3)' }}>none</span>
-                  ) : (
-                    n.files.map((f) => <div key={f}>{f}</div>)
-                  )}
-                </Td>
-                <Td>{n.summary ?? <span style={{ color: 'var(--ink-3)' }}>no summary recorded</span>}</Td>
-              </tr>
-            );
-          })}
-        </Table>
+        <FitWidth>
+          <Table
+            head={['Component', 'Kind', 'Provenance', 'In', 'Out', 'Files', 'Summary']}
+            caption="Every component in the graph"
+          >
+            {nodes.map((n) => {
+              const d = degree.get(n.key) ?? { in: 0, out: 0 };
+              return (
+                <tr key={n.key}>
+                  <Td>
+                    <RowSelect name={n.name} onClick={() => select(n.key)} selected={selected === n.key} />
+                  </Td>
+                  <Td nowrap>{kindLabel(n.kind)}</Td>
+                  <Td nowrap>
+                    {n.provenance === 'detected' ? <Tag tone="good">detected</Tag> : <Tag tone="warn">inferred</Tag>}
+                  </Td>
+                  <Td nowrap>{d.in}</Td>
+                  <Td nowrap>{d.out}</Td>
+                  <Td mono>
+                    {n.files.length === 0 ? (
+                      <span style={{ color: 'var(--ink-3)' }}>none</span>
+                    ) : (
+                      n.files.map((f) => <div key={f}>{f}</div>)
+                    )}
+                  </Td>
+                  <Td>{n.summary ?? <span style={{ color: 'var(--ink-3)' }}>no summary recorded</span>}</Td>
+                </tr>
+              );
+            })}
+          </Table>
+        </FitWidth>
 
         <h3 style={{ margin: '1.2rem 0 0.5rem', fontSize: '0.9rem', fontWeight: 650 }}>
           Relationships ({edges.length})
@@ -1114,41 +1136,43 @@ export function ArchitectureExplorer({
             No relationships were extracted between these components.
           </p>
         ) : (
-          <Table
-            head={['From', 'Relationship', 'To', 'Provenance', 'Evidence']}
-            caption="Every relationship in the graph, with the evidence behind it"
-          >
-            {edges.map((e) => {
-              const from = byKey.get(e.from);
-              const to = byKey.get(e.to);
-              return (
-                <tr key={edgeId(e)}>
-                  <Td>
-                    {from ? <RowSelect name={from.name} onClick={() => select(from.key)} selected={selected === from.key} /> : e.from}
-                  </Td>
-                  <Td nowrap>{relLabel(e.kind)}</Td>
-                  <Td>
-                    {to ? <RowSelect name={to.name} onClick={() => select(to.key)} selected={selected === to.key} /> : e.to}
-                  </Td>
-                  <Td nowrap>
-                    {e.provenance === 'detected' ? <Tag tone="good">detected</Tag> : <Tag tone="warn">inferred</Tag>}
-                  </Td>
-                  <Td mono>
-                    {e.evidence.length === 0 ? (
-                      <span style={{ color: 'var(--ink-3)' }}>none recorded</span>
-                    ) : (
-                      e.evidence.map((ev) => (
-                        <div key={`${ev.file}:${ev.startLine ?? ''}`}>
-                          {evidenceLabel(ev)}
-                          {ev.excerpt ? ` — ${ev.excerpt}` : ''}
-                        </div>
-                      ))
-                    )}
-                  </Td>
-                </tr>
-              );
-            })}
-          </Table>
+          <FitWidth>
+            <Table
+              head={['From', 'Relationship', 'To', 'Provenance', 'Evidence']}
+              caption="Every relationship in the graph, with the evidence behind it"
+            >
+              {edges.map((e) => {
+                const from = byKey.get(e.from);
+                const to = byKey.get(e.to);
+                return (
+                  <tr key={edgeId(e)}>
+                    <Td>
+                      {from ? <RowSelect name={from.name} onClick={() => select(from.key)} selected={selected === from.key} /> : e.from}
+                    </Td>
+                    <Td nowrap>{relLabel(e.kind)}</Td>
+                    <Td>
+                      {to ? <RowSelect name={to.name} onClick={() => select(to.key)} selected={selected === to.key} /> : e.to}
+                    </Td>
+                    <Td nowrap>
+                      {e.provenance === 'detected' ? <Tag tone="good">detected</Tag> : <Tag tone="warn">inferred</Tag>}
+                    </Td>
+                    <Td mono>
+                      {e.evidence.length === 0 ? (
+                        <span style={{ color: 'var(--ink-3)' }}>none recorded</span>
+                      ) : (
+                        e.evidence.map((ev) => (
+                          <div key={`${ev.file}:${ev.startLine ?? ''}`}>
+                            {evidenceLabel(ev)}
+                            {ev.excerpt ? ` — ${ev.excerpt}` : ''}
+                          </div>
+                        ))
+                      )}
+                    </Td>
+                  </tr>
+                );
+              })}
+            </Table>
+          </FitWidth>
         )}
       </Card>
     </>

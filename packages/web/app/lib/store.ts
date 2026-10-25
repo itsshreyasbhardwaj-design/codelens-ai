@@ -1,5 +1,6 @@
 import 'server-only';
-import { mkdirSync } from 'node:fs';
+import { existsSync, mkdirSync } from 'node:fs';
+import { dirname, join, resolve } from 'node:path';
 import { Db } from '@codelens/engine/db/index.ts';
 
 /**
@@ -15,14 +16,41 @@ import { Db } from '@codelens/engine/db/index.ts';
  */
 
 export const LOCAL_ORG = 'local';
-const DB_PATH = process.env.CODELENS_DB ?? '.codelens/codelens.db';
+
+/**
+ * Locate the workspace root.
+ *
+ * A relative database path must not resolve against the process working
+ * directory: the CLI runs from the repository root and writes there, while the
+ * Next server runs from packages/web. Resolving relative would have the web app
+ * looking in a different place from the tool that populates it, and the symptom
+ * is an empty dashboard with no error.
+ */
+function workspaceRoot(): string {
+  let dir = process.cwd();
+  for (let i = 0; i < 6; i++) {
+    if (existsSync(join(dir, 'pnpm-workspace.yaml'))) return dir;
+    const parent = dirname(dir);
+    if (parent === dir) break;
+    dir = parent;
+  }
+  return process.cwd();
+}
+
+const DB_PATH = process.env.CODELENS_DB
+  ? resolve(process.env.CODELENS_DB)
+  : join(workspaceRoot(), '.codelens', 'codelens.db');
+
+/** The resolved database path, shown in the UI so an empty state is explainable. */
+export function databasePath(): string {
+  return DB_PATH;
+}
 
 let cached: Db | undefined;
 
 export function db(): Db {
   if (cached) return cached;
-  const dir = DB_PATH.slice(0, DB_PATH.lastIndexOf('/'));
-  if (dir) mkdirSync(dir, { recursive: true });
+  mkdirSync(dirname(DB_PATH), { recursive: true });
   const d = new Db(DB_PATH);
   d.migrate();
   cached = d;

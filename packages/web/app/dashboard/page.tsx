@@ -255,8 +255,10 @@ function ProjectCard({ project, detailed }: { project: ProjectRow; detailed: boo
               </Table>
               {assessed !== undefined ? (
                 <p style={{ margin: '0.45rem 0 0', fontSize: '0.82rem', color: 'var(--ink-3)' }}>
-                  {Math.round(assessed * 100)}% of the scoring weight was gradeable. The overall score is renormalised
-                  over the dimensions that had enough evidence; the rest read as insufficient evidence rather than zero.
+                  {Math.round(assessed * 100)}% of the scoring weight was gradeable.
+                  {assessed < 1
+                    ? ' The overall score is renormalised over the dimensions that had enough evidence; the rest read as insufficient evidence rather than zero.'
+                    : ' Every dimension had enough evidence to grade, so the overall score is the full weighted average.'}
                 </p>
               ) : null}
             </div>

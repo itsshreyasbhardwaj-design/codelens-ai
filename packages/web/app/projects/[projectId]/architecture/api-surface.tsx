@@ -67,6 +67,17 @@ function findingHref(projectId: string, displayId: string): string {
   return `${base}?q=${encodeURIComponent(displayId)}#finding-${encodeURIComponent(displayId)}`;
 }
 
+/**
+ * `Shell` lays its children out in a grid, where a grid item's default
+ * `min-width: auto` lets its widest content set the track width — a ten-column
+ * table would otherwise stretch the whole page sideways. `width: 0` drops this
+ * subtree's intrinsic contribution and `min-width: 100%` fills the width the
+ * page actually resolved to, so the table scrolls inside itself instead.
+ */
+function FitWidth({ children }: { children: ReactNode }) {
+  return <div style={{ width: 0, minWidth: '100%' }}>{children}</div>;
+}
+
 function Plain({ value, notes }: { value: string; notes: Record<string, string> }) {
   return <span title={notes[value] ?? value}>{value}</span>;
 }
@@ -129,92 +140,94 @@ export function ApiSurface({
             <Tag>unknown {counts.unknown ?? 0}</Tag>
           </div>
 
-          <Table
-            head={[
-              'Method',
-              'Path',
-              'Auth',
-              'Authorisation checks',
-              'Validation',
-              'Error handling',
-              'Request',
-              'Response',
-              'Source',
-              'Findings',
-            ]}
-            caption="API routes with authentication, authorisation, validation and error handling as read from each handler"
-          >
-            {routes.map((r) => {
-              const hits = byFile.get(r.file) ?? [];
-              return (
-                <tr key={`${r.method} ${r.path} ${r.file}:${r.line ?? ''}`}>
-                  <Td mono nowrap>
-                    {r.method}
-                  </Td>
-                  <Td mono>{r.path}</Td>
-                  <Td nowrap>
-                    <AuthCell value={r.authRequired} />
-                  </Td>
-                  <Td>
-                    {r.authorizationChecks.length === 0 ? (
-                      <span style={{ color: 'var(--ink-3)' }}>none detected</span>
-                    ) : (
-                      <ul style={{ margin: 0, paddingLeft: '1rem' }}>
-                        {r.authorizationChecks.map((c) => (
-                          <li key={c} style={{ fontFamily: 'var(--font-mono)', fontSize: '0.78rem' }}>
-                            {c}
-                          </li>
-                        ))}
-                      </ul>
-                    )}
-                  </Td>
-                  <Td nowrap>
-                    <Plain value={r.validation} notes={VALIDATION_NOTE} />
-                  </Td>
-                  <Td nowrap>
-                    <Plain value={r.errorHandling} notes={ERROR_NOTE} />
-                  </Td>
-                  <Td>
-                    <Shape value={r.requestShape} label="request" />
-                  </Td>
-                  <Td>
-                    <Shape value={r.responseShape} label="response" />
-                  </Td>
-                  <Td mono>
-                    {r.file}
-                    {r.line ? `:${r.line}` : ''}
-                    {r.handlerSymbol ? (
-                      <div style={{ color: 'var(--ink-3)' }}>{r.handlerSymbol}</div>
-                    ) : (
-                      <div style={{ color: 'var(--ink-3)' }}>anonymous handler</div>
-                    )}
-                  </Td>
-                  <Td>
-                    {hits.length === 0 ? (
-                      <span style={{ color: 'var(--ink-3)' }}>none</span>
-                    ) : (
-                      <ul style={{ margin: 0, padding: 0, listStyle: 'none', display: 'grid', gap: '0.3rem' }}>
-                        {hits.map((f) => (
-                          <li key={f.displayId} style={{ display: 'grid', gap: '0.15rem' }}>
-                            <Link
-                              href={findingHref(projectId, f.displayId)}
-                              style={{ fontFamily: 'var(--font-mono)', fontSize: '0.78rem' }}
-                            >
-                              {f.displayId}
-                            </Link>
-                            <span style={{ display: 'flex', flexWrap: 'wrap', gap: '0.2rem' }}>
-                              <SeverityPill severity={f.severity} />
-                              <ConfidencePill confidence={f.confidence} />
-                            </span>
-                          </li>
-                        ))}
-                      </ul>
-                    )}
-                  </Td>
-                </tr>
-              );
-            })}
-          </Table>
+          <FitWidth>
+            <Table
+              head={[
+                'Method',
+                'Path',
+                'Auth',
+                'Authorisation checks',
+                'Validation',
+                'Error handling',
+                'Request',
+                'Response',
+                'Source',
+                'Findings',
+              ]}
+              caption="API routes with authentication, authorisation, validation and error handling as read from each handler"
+            >
+              {routes.map((r) => {
+                const hits = byFile.get(r.file) ?? [];
+                return (
+                  <tr key={`${r.method} ${r.path} ${r.file}:${r.line ?? ''}`}>
+                    <Td mono nowrap>
+                      {r.method}
+                    </Td>
+                    <Td mono>{r.path}</Td>
+                    <Td nowrap>
+                      <AuthCell value={r.authRequired} />
+                    </Td>
+                    <Td>
+                      {r.authorizationChecks.length === 0 ? (
+                        <span style={{ color: 'var(--ink-3)' }}>none detected</span>
+                      ) : (
+                        <ul style={{ margin: 0, paddingLeft: '1rem' }}>
+                          {r.authorizationChecks.map((c) => (
+                            <li key={c} style={{ fontFamily: 'var(--font-mono)', fontSize: '0.78rem' }}>
+                              {c}
+                            </li>
+                          ))}
+                        </ul>
+                      )}
+                    </Td>
+                    <Td nowrap>
+                      <Plain value={r.validation} notes={VALIDATION_NOTE} />
+                    </Td>
+                    <Td nowrap>
+                      <Plain value={r.errorHandling} notes={ERROR_NOTE} />
+                    </Td>
+                    <Td>
+                      <Shape value={r.requestShape} label="request" />
+                    </Td>
+                    <Td>
+                      <Shape value={r.responseShape} label="response" />
+                    </Td>
+                    <Td mono>
+                      {r.file}
+                      {r.line ? `:${r.line}` : ''}
+                      {r.handlerSymbol ? (
+                        <div style={{ color: 'var(--ink-3)' }}>{r.handlerSymbol}</div>
+                      ) : (
+                        <div style={{ color: 'var(--ink-3)' }}>anonymous handler</div>
+                      )}
+                    </Td>
+                    <Td>
+                      {hits.length === 0 ? (
+                        <span style={{ color: 'var(--ink-3)' }}>none</span>
+                      ) : (
+                        <ul style={{ margin: 0, padding: 0, listStyle: 'none', display: 'grid', gap: '0.3rem' }}>
+                          {hits.map((f) => (
+                            <li key={f.displayId} style={{ display: 'grid', gap: '0.15rem' }}>
+                              <Link
+                                href={findingHref(projectId, f.displayId)}
+                                style={{ fontFamily: 'var(--font-mono)', fontSize: '0.78rem' }}
+                              >
+                                {f.displayId}
+                              </Link>
+                              <span style={{ display: 'flex', flexWrap: 'wrap', gap: '0.2rem' }}>
+                                <SeverityPill severity={f.severity} />
+                                <ConfidencePill confidence={f.confidence} />
+                              </span>
+                            </li>
+                          ))}
+                        </ul>
+                      )}
+                    </Td>
+                  </tr>
+                );
+              })}
+            </Table>
+          </FitWidth>
 
           <div style={{ marginTop: '0.9rem', display: 'grid', gap: '0.7rem' }}>
             <Caveat>

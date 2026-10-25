@@ -360,8 +360,9 @@ function authAnswer(ctx: Ctx): { summary: string; blocks: AnswerBlock[]; caveats
   const summary = required.length === 0
     ? `No route in this scan requires authentication. All ${pluralize(routes.length, 'route')} resolved to `
       + `${open.length} public and ${unknown.length} undetermined, and ${authFindings.length} finding(s) bear on authentication or authorisation.`
-    : `Of ${pluralize(routes.length, 'route')}, ${required.length} require authentication, ${open.length} are reachable `
-      + `without it and ${unknown.length} could not be resolved. ${authFindings.length} finding(s) bear on authentication or authorisation.`;
+    : `Of ${pluralize(routes.length, 'route')}, ${required.length} ${required.length === 1 ? 'requires' : 'require'} `
+      + `authentication, ${open.length} ${open.length === 1 ? 'is' : 'are'} reachable without it and ${unknown.length} `
+      + `could not be resolved. ${authFindings.length} finding(s) bear on authentication or authorisation.`;
 
   return {
     summary,
@@ -550,7 +551,7 @@ function untestedEndpointsAnswer(ctx: Ctx): { summary: string; blocks: AnswerBlo
   const summary = uncovered.length === 0
     ? `All ${pluralize(routes.length, 'route')} are owned by a feature that lists a test file.`
     : `${uncovered.length} of ${pluralize(routes.length, 'route')} have no test file attached through the feature `
-      + `inventory${covered.length > 0 ? `, and ${covered.length} do` : ''}. `
+      + `inventory${covered.length > 0 ? `, and ${covered.length} ${covered.length === 1 ? 'does' : 'do'}` : ''}. `
       + `The testing analyzer raised ${pluralize(testFindings.length, 'finding')}.`;
 
   return {

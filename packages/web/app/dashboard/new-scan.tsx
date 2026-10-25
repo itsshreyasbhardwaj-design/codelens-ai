@@ -269,7 +269,7 @@ export function NewScan() {
             {job ? JOB_STATUS_LABEL[job.status] : 'Starting'}
           </span>
           <div style={{ flex: 1 }} />
-          {job && !job.finishedAt ? (
+          {!job || !job.finishedAt ? (
             <button type="button" onClick={cancel} disabled={cancelling} style={buttonStyle(false)}>
               {cancelling ? 'Cancelling…' : 'Cancel scan'}
             </button>

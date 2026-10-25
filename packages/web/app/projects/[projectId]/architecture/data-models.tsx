@@ -1,5 +1,17 @@
+import type { ReactNode } from 'react';
 import { Card, Caveat, EmptyState, SectionHeading, Table, Tag, Td } from '../../../components/ui.tsx';
 import type { ModelRow } from '../../../lib/store.ts';
+
+/**
+ * `Shell` lays its children out in a grid, where a grid item's default
+ * `min-width: auto` lets its widest content set the track width. `width: 0`
+ * drops this subtree's intrinsic contribution and `min-width: 100%` fills the
+ * resolved width, so a wide field table scrolls inside itself rather than
+ * stretching the page sideways.
+ */
+function FitWidth({ children }: { children: ReactNode }) {
+  return <div style={{ width: 0, minWidth: '100%' }}>{children}</div>;
+}
 
 /**
  * Data models as declared in source.
@@ -105,46 +117,48 @@ export function DataModels({ models }: { models: ModelRow[] }) {
                     No fields were recorded for this model.
                   </p>
                 ) : (
-                  <Table
-                    head={['Field', 'Type', 'Nullable', 'Unique', 'Role']}
-                    caption={`Fields of ${model.name}`}
-                  >
-                    {model.fields.map((f) => (
-                      <tr key={f.name}>
-                        <Td mono>{f.name}</Td>
-                        <Td mono>{f.type ?? <span style={{ color: 'var(--ink-3)' }}>not recorded</span>}</Td>
-                        <Td nowrap>
-                          {f.nullable === undefined ? (
-                            <span style={{ color: 'var(--ink-3)' }}>not recorded</span>
-                          ) : f.nullable ? (
-                            'nullable'
-                          ) : (
-                            'not null'
-                          )}
-                        </Td>
-                        <Td nowrap>
-                          {f.unique === undefined ? (
-                            <span style={{ color: 'var(--ink-3)' }}>not recorded</span>
-                          ) : f.unique ? (
-                            'unique'
-                          ) : (
-                            'not unique'
-                          )}
-                        </Td>
-                        <Td nowrap>
-                          {f.name === owned ? (
-                            <Tag tone="accent">ownership</Tag>
-                          ) : f.name === pk ? (
-                            <Tag>primary key</Tag>
-                          ) : model.indexes.includes(f.name) ? (
-                            <Tag>indexed</Tag>
-                          ) : (
-                            <span style={{ color: 'var(--ink-3)' }}>—</span>
-                          )}
-                        </Td>
-                      </tr>
-                    ))}
-                  </Table>
+                  <FitWidth>
+                    <Table
+                      head={['Field', 'Type', 'Nullable', 'Unique', 'Role']}
+                      caption={`Fields of ${model.name}`}
+                    >
+                      {model.fields.map((f) => (
+                        <tr key={f.name}>
+                          <Td mono>{f.name}</Td>
+                          <Td mono>{f.type ?? <span style={{ color: 'var(--ink-3)' }}>not recorded</span>}</Td>
+                          <Td nowrap>
+                            {f.nullable === undefined ? (
+                              <span style={{ color: 'var(--ink-3)' }}>not recorded</span>
+                            ) : f.nullable ? (
+                              'nullable'
+                            ) : (
+                              'not null'
+                            )}
+                          </Td>
+                          <Td nowrap>
+                            {f.unique === undefined ? (
+                              <span style={{ color: 'var(--ink-3)' }}>not recorded</span>
+                            ) : f.unique ? (
+                              'unique'
+                            ) : (
+                              'not unique'
+                            )}
+                          </Td>
+                          <Td nowrap>
+                            {f.name === owned ? (
+                              <Tag tone="accent">ownership</Tag>
+                            ) : f.name === pk ? (
+                              <Tag>primary key</Tag>
+                            ) : model.indexes.includes(f.name) ? (
+                              <Tag>indexed</Tag>
+                            ) : (
+                              <span style={{ color: 'var(--ink-3)' }}>—</span>
+                            )}
+                          </Td>
+                        </tr>
+                      ))}
+                    </Table>
+                  </FitWidth>
                 )}
               </div>
 

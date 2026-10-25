@@ -32,9 +32,9 @@ environment-variable map; architecture components and relationships with
 detected-versus-inferred provenance; and the feature inventory with
 evidence-based status.
 
-**Nine diagnostic analyzers** — security, reliability, performance,
-scalability, accessibility, code quality, testing, DevOps, cost — with 94
-distinct rules. Measured against the bundled fixture's 43 documented defects:
+**Ten diagnostic analyzers** — security, reliability, performance, scalability,
+accessibility, code quality, testing, DevOps, cost, AI application — with 130
+distinct rules. Measured against the bundled fixture's 69 documented defects:
 
 | Category | Required-tier recall | False positives on clean files |
 | --- | --- | --- |
@@ -45,8 +45,13 @@ distinct rules. Measured against the bundled fixture's 43 documented defects:
 | Accessibility | 2/2 | 0 |
 | Code quality | 1/1 | 0 |
 | Testing | 1/1 | 0 |
+| AI application | 2/2 | 0 |
 
-Zero findings in any run lacked verified evidence. `pnpm eval` reproduces these
+All 69 ground-truth defects were detected (32 required, 37 bonus), with zero
+false positives on files declared clean and zero findings lacking verified
+evidence. Precision is reported as a *lower bound* of 77%, because a finding
+matching nothing in the list may still be a real defect the list omits — see the
+known weaknesses below. `pnpm eval` reproduces these
 numbers and exits non-zero on a regression, so a drop in diagnostic quality
 fails the build.
 
@@ -98,7 +103,7 @@ progress, project overview with scorecard and coverage panel, architecture
 explorer, findings explorer with full evidence inspection, Fix Studio, a
 repository-aware question surface, and report exports.
 
-**117 automated tests**, zero runtime test dependencies: Node's built-in test
+**122 automated tests**, zero runtime test dependencies: Node's built-in test
 runner and native TypeScript.
 
 ## Not implemented
@@ -141,7 +146,7 @@ Stated plainly rather than stubbed.
 
 ## Known weaknesses
 
-- **Ground truth is one fixture.** Recall is measured against 43 documented
+- **Ground truth is one fixture.** Recall is measured against 69 documented
   defects in one deliberately defective Next.js/Prisma project. That is enough
   to catch regressions and nowhere near enough to characterise accuracy across
   ecosystems. Precision is reported only as a *lower bound* for exactly this
