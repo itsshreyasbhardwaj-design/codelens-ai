@@ -144,6 +144,29 @@ Stated plainly rather than stubbed.
   module-level map, correct for one process. The orchestrator already persists
   stages, so a multi-process deployment would read those tables instead.
 
+## How this was verified, and what was not
+
+Verified by execution: the type checker and the 124-test suite (unit,
+integration, and a single end-to-end journey test that ingests the fixture,
+diagnoses it, generates and validates Fix Packs, exports every report format,
+applies fixes, re-scans and compares); the accuracy harness; a production build
+of the web app; and every page of that app loaded in a browser against a real
+stored scan.
+
+Not covered by automation:
+
+- **No browser-driven end-to-end suite.** The web journey was verified by
+  loading each page and reading what rendered, not by Playwright or similar.
+  Adding one would mean a browser-automation dependency; the engine-level
+  journey test covers the same flow headlessly.
+- **No linter.** The project has no ESLint configuration. Style is held by the
+  type checker and review. A linter would be worth adding before more people
+  contribute.
+- **The hosted AI adapters were never called.** The `anthropic` and `openai`
+  HTTP paths are unit-tested for their guard conditions but have not been
+  executed against a live endpoint, because that spends money. The `ollama`
+  path and the `none` default are exercised.
+
 ## Known weaknesses
 
 - **Ground truth is one fixture.** Recall is measured against 69 documented
