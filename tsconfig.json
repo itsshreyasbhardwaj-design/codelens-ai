@@ -1,0 +1,29 @@
+{
+  "compilerOptions": {
+    "target": "ES2023",
+    "lib": ["ES2023", "DOM"],
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
+    "strict": true,
+    "noUncheckedIndexedAccess": true,
+    "exactOptionalPropertyTypes": false,
+    "noImplicitOverride": true,
+    "noEmit": true,
+    "skipLibCheck": true,
+    "resolveJsonModule": true,
+    "allowImportingTsExtensions": true,
+    "rewriteRelativeImportExtensions": true,
+    "verbatimModuleSyntax": false,
+    "jsx": "react-jsx",
+    "types": ["node"],
+    "paths": {
+      "@codelens/core": ["./packages/core/src/index.ts"],
+      "@codelens/core/*": ["./packages/core/src/*"],
+      "@codelens/engine": ["./packages/engine/src/index.ts"],
+      "@codelens/engine/*": ["./packages/engine/src/*"]
+    },
+    "baseUrl": "."
+  },
+  "include": ["packages/core/src", "packages/engine/src", "packages/cli/src"],
+  "exclude": ["node_modules", "packages/web/.next", "fixtures"]
+}

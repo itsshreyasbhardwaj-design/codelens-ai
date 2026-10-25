@@ -1,0 +1,60 @@
+{
+  "project": "vulnerable-shop",
+  "synthetic": true,
+  "note": "Expected findings for the precision/recall harness. 'required' items must be detected for the harness to pass; 'bonus' items are credited when found but not required. 'cleanFiles' must produce no security or reliability findings — anything reported there is counted as a false positive.",
+  "expected": [
+    { "key": "hardcoded-jwt-secret", "category": "security", "file": "src/lib/auth.ts", "severity": "high", "tier": "required", "description": "JWT signing key hardcoded with an env fallback" },
+    { "key": "jwt-no-expiry", "category": "security", "file": "src/lib/auth.ts", "severity": "medium", "tier": "bonus", "description": "Token signed without an expiry claim" },
+    { "key": "sql-injection", "category": "security", "file": "src/lib/db.ts", "severity": "critical", "tier": "required", "description": "Search term concatenated into raw SQL" },
+    { "key": "bola-order-read", "category": "security", "file": "src/app/api/orders/[id]/route.ts", "severity": "critical", "tier": "required", "description": "Order fetched by URL id without an ownership check" },
+    { "key": "missing-auth-delete", "category": "security", "file": "src/app/api/orders/[id]/route.ts", "severity": "critical", "tier": "required", "description": "DELETE handler performs no session check" },
+    { "key": "missing-auth-admin", "category": "security", "file": "src/app/api/admin/stats/route.ts", "severity": "critical", "tier": "required", "description": "Admin endpoint exposes customer data with no auth" },
+    { "key": "no-rate-limit-login", "category": "security", "file": "src/app/api/login/route.ts", "severity": "high", "tier": "required", "description": "Login endpoint has no rate limiting" },
+    { "key": "plaintext-password", "category": "security", "file": "src/app/api/login/route.ts", "severity": "critical", "tier": "required", "description": "Password compared in plaintext rather than against a hash" },
+    { "key": "account-enumeration", "category": "security", "file": "src/app/api/login/route.ts", "severity": "medium", "tier": "bonus", "description": "Error message distinguishes unknown account from wrong password" },
+    { "key": "webhook-unverified", "category": "security", "file": "src/app/api/webhooks/stripe/route.ts", "severity": "critical", "tier": "required", "description": "Stripe signature read but never verified" },
+    { "key": "unsafe-upload", "category": "security", "file": "src/app/api/upload/route.ts", "severity": "high", "tier": "required", "description": "No type or size validation, client filename used in path" },
+    { "key": "ssrf", "category": "security", "file": "src/app/api/upload/route.ts", "severity": "high", "tier": "required", "description": "User-supplied URL fetched directly" },
+    { "key": "xss-inner-html", "category": "security", "file": "src/app/products/page.tsx", "severity": "high", "tier": "required", "description": "Product description rendered via dangerouslySetInnerHTML" },
+    { "key": "committed-env-secrets", "category": "security", "file": ".env", "severity": "critical", "tier": "required", "description": "Live-looking credentials committed in .env" },
+    { "key": "missing-security-headers", "category": "security", "file": "next.config.js", "severity": "medium", "tier": "required", "description": "No security headers configured" },
+    { "key": "plaintext-password-column", "category": "security", "file": "prisma/schema.prisma", "severity": "high", "tier": "bonus", "description": "User.password stores a raw credential" },
+
+    { "key": "missing-null-check", "category": "reliability", "file": "src/app/api/orders/[id]/route.ts", "severity": "medium", "tier": "required", "description": "order dereferenced without a null check" },
+    { "key": "webhook-not-idempotent", "category": "reliability", "file": "src/app/api/webhooks/stripe/route.ts", "severity": "high", "tier": "required", "description": "Replayed delivery processed twice" },
+    { "key": "payment-state-order", "category": "reliability", "file": "src/app/api/webhooks/stripe/route.ts", "severity": "high", "tier": "required", "description": "Order marked paid before the charge outcome is checked" },
+    { "key": "contract-break-order-fields", "category": "reliability", "file": "src/components/OrderSummary.tsx", "severity": "medium", "tier": "required", "description": "Frontend reads customerName and shippedAt, which the API never returns" },
+    { "key": "unhandled-rejection", "category": "reliability", "file": "src/components/OrderSummary.tsx", "severity": "medium", "tier": "required", "description": "fetch chain has no catch" },
+    { "key": "dead-ui-action", "category": "reliability", "file": "src/components/CheckoutButton.tsx", "severity": "high", "tier": "required", "description": "Primary CTA has no backend call behind it" },
+    { "key": "unused-integration", "category": "reliability", "file": "src/lib/mailer.ts", "severity": "medium", "tier": "required", "description": "sendOrderConfirmation is never called" },
+    { "key": "undocumented-env-var", "category": "reliability", "file": "src/lib/auth.ts", "severity": "low", "tier": "required", "description": "SESSION_TTL_HOURS read but missing from .env.example" },
+    { "key": "undocumented-env-var-admin", "category": "reliability", "file": "src/app/api/admin/stats/route.ts", "severity": "low", "tier": "bonus", "description": "ADMIN_EMAILS read but missing from .env.example" },
+
+    { "key": "n-plus-one", "category": "performance", "file": "src/app/api/admin/stats/route.ts", "severity": "high", "tier": "required", "description": "Query inside a loop over users" },
+    { "key": "unbounded-query", "category": "performance", "file": "src/lib/db.ts", "severity": "medium", "tier": "required", "description": "findMany with no take limit" },
+    { "key": "missing-pagination", "category": "performance", "file": "src/app/products/page.tsx", "severity": "medium", "tier": "bonus", "description": "Product list renders every row" },
+    { "key": "missing-index", "category": "performance", "file": "prisma/schema.prisma", "severity": "medium", "tier": "bonus", "description": "Order.userId queried constantly with no index" },
+
+    { "key": "docker-root-user", "category": "devops", "file": "Dockerfile", "severity": "medium", "tier": "required", "description": "Container runs as root" },
+    { "key": "docker-no-healthcheck", "category": "devops", "file": "Dockerfile", "severity": "low", "tier": "required", "description": "No HEALTHCHECK directive" },
+    { "key": "ci-no-tests", "category": "devops", "file": ".github/workflows/deploy.yml", "severity": "high", "tier": "required", "description": "Deploys to production without running tests" },
+
+    { "key": "img-missing-alt", "category": "accessibility", "file": "src/app/products/page.tsx", "severity": "medium", "tier": "required", "description": "img element without alt" },
+    { "key": "button-no-label", "category": "accessibility", "file": "src/app/products/page.tsx", "severity": "medium", "tier": "required", "description": "Icon-only button with no accessible name" },
+    { "key": "missing-loading-state", "category": "accessibility", "file": "src/app/products/page.tsx", "severity": "low", "tier": "bonus", "description": "No loading or error state" },
+
+    { "key": "duplicated-discount-logic", "category": "quality", "file": "src/server/legacy.ts", "severity": "medium", "tier": "required", "description": "Discount rule implemented twice and already drifted" },
+    { "key": "dead-express-server", "category": "quality", "file": "src/server/legacy.ts", "severity": "low", "tier": "bonus", "description": "Express app never started" },
+
+    { "key": "untested-critical-flows", "category": "testing", "file": "tests/smoke.test.ts", "severity": "high", "tier": "required", "description": "No tests for auth, authorization, payment state, or any API route" },
+
+    { "key": "prompt-injection", "category": "ai_app", "file": "src/app/api/chat/route.ts", "severity": "high", "tier": "required", "description": "User text concatenated into the system prompt" },
+    { "key": "no-output-validation", "category": "ai_app", "file": "src/app/api/chat/route.ts", "severity": "medium", "tier": "required", "description": "Model output returned unvalidated" },
+    { "key": "no-token-cap", "category": "ai_app", "file": "src/app/api/chat/route.ts", "severity": "medium", "tier": "bonus", "description": "No max_tokens, timeout, or retry" }
+  ],
+  "cleanFiles": [
+    "README.md",
+    "tsconfig.json",
+    "package.json"
+  ]
+}

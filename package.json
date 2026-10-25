@@ -1,0 +1,24 @@
+{
+  "name": "codelens-ai",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Universal codebase intelligence: understand any repository, diagnose what matters, fix it with precision.",
+  "license": "MIT",
+  "packageManager": "pnpm@11.17.0",
+  "engines": {
+    "node": ">=24.0.0"
+  },
+  "scripts": {
+    "scan": "node packages/cli/src/bin.ts",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "node --test --experimental-strip-types \"packages/**/*.test.ts\"",
+    "test:watch": "node --test --watch --experimental-strip-types \"packages/**/*.test.ts\"",
+    "dev": "pnpm --filter @codelens/web dev",
+    "build:web": "pnpm --filter @codelens/web build",
+    "verify": "pnpm typecheck && pnpm test"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.5",
+    "typescript": "^5.7.3"
+  }
+}

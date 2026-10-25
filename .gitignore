@@ -1,0 +1,9 @@
+node_modules/
+.next/
+dist/
+.codelens/
+*.log
+.DS_Store
+.env
+.env.local
+!fixtures/vulnerable-shop/.env

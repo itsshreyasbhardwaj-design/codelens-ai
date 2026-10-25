@@ -1,0 +1,50 @@
+generator client { provider = "prisma-client-js" }
+datasource db { provider = "postgresql"; url = env("DATABASE_URL") }
+
+model User {
+  id        String   @id @default(cuid())
+  email     String   @unique
+  // DEFECT (plaintext credential storage): no hash column, password stored raw.
+  password  String
+  role      String   @default("customer")
+  orders    Order[]
+  createdAt DateTime @default(now())
+}
+
+model Order {
+  id        String      @id @default(cuid())
+  userId    String
+  user      User        @relation(fields: [userId], references: [id])
+  total     Int
+  status    String      @default("pending")
+  // DEFECT (missing index): orders are queried by userId on every request
+  // but there is no index on the column.
+  items     OrderItem[]
+  createdAt DateTime    @default(now())
+}
+
+model OrderItem {
+  id        String  @id @default(cuid())
+  orderId   String
+  order     Order   @relation(fields: [orderId], references: [id])
+  productId String
+  product   Product @relation(fields: [productId], references: [id])
+  quantity  Int
+}
+
+model Product {
+  id          String      @id @default(cuid())
+  name        String
+  priceCents  Int
+  description String?
+  items       OrderItem[]
+}
+
+model WebhookEvent {
+  id        String   @id @default(cuid())
+  // DEFECT (non-idempotent webhook): no unique constraint on the provider's
+  // event id, so a replayed delivery is processed twice.
+  eventId   String
+  type      String
+  createdAt DateTime @default(now())
+}
