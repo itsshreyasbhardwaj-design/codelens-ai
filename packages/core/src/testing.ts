@@ -26,6 +26,7 @@ export function makeFinding(over: Partial<Finding> = {}): Finding {
     userImpact: 'Users may be affected.',
     remediation: 'Fix it.',
     effort: 'small',
+    downstreamConsequences: [],
     relatedTests: [],
     verificationSteps: [],
     relatedFindings: [],

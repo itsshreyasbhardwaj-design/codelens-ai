@@ -347,7 +347,8 @@ export async function runScan(req: ScanRequest): Promise<ScanOutcome> {
   // -------------------------------------------- 11. fix pack generation -----
   const packs = await runStage('fix_pack_generation', () => {
     const built = buildFixPacks(outcome.prioritized);
-    const promptCtx: PromptContext = {
+
+    const baseCtx = {
       projectName: req.projectName,
       scanId,
       baselineCommit: commitSha,
@@ -358,35 +359,56 @@ export async function runScan(req: ScanRequest): Promise<ScanOutcome> {
       modelCount: map.models.length,
       coverage,
       ...detectCommands(map),
-      totalPacks: built.length,
     };
 
     const knownFiles = new Set(snapshot.files.map((f) => f.path));
     const scanFingerprints = new Set(outcome.findings.map((f) => f.fingerprint));
-    const allPackKeys = new Set(built.map((p) => p.key));
-    const packDependencies = new Map(built.map((p) => [p.key, p.dependsOn]));
 
+    const render = (packs: FixPack[]): Map<string, Record<AgentFormat, string>> => {
+      const ctx: PromptContext = { ...baseCtx, totalPacks: packs.length };
+      const allPackKeys = new Set(packs.map((p) => p.key));
+      const packDependencies = new Map(packs.map((p) => [p.key, p.dependsOn]));
+      const rendered = new Map<string, Record<AgentFormat, string>>();
+      for (const pack of packs) {
+        const prompts: Record<AgentFormat, string> = {
+          claude_code: generateFixPackPrompt(pack, ctx, 'claude_code'),
+          codex: generateFixPackPrompt(pack, ctx, 'codex'),
+          generic: generateFixPackPrompt(pack, ctx, 'generic'),
+        };
+        rendered.set(pack.key, prompts);
+        outcome.packValidations.set(pack.key, validateFixPack({
+          pack, prompt: prompts.generic, ctx,
+          knownFiles, scanFingerprints, allPackKeys, packDependencies,
+        }));
+      }
+      return rendered;
+    };
+
+    // First pass decides which packs are presentable at all.
+    render(built);
+    const presentable = built.filter((p) => outcome.packValidations.get(p.key)?.presentable);
     for (const pack of built) {
-      const prompts: Record<AgentFormat, string> = {
-        claude_code: generateFixPackPrompt(pack, promptCtx, 'claude_code'),
-        codex: generateFixPackPrompt(pack, promptCtx, 'codex'),
-        generic: generateFixPackPrompt(pack, promptCtx, 'generic'),
-      };
-      const validation = validateFixPack({
-        pack, prompt: prompts.generic, ctx: promptCtx,
-        knownFiles, scanFingerprints, allPackKeys, packDependencies,
-      });
-      outcome.packPrompts.set(pack.key, prompts);
-      outcome.packValidations.set(pack.key, validation);
-      if (!validation.presentable) {
+      const v = outcome.packValidations.get(pack.key);
+      if (v && !v.presentable) {
         tracker.warn(
           'fix_pack_generation',
-          `pack '${pack.key}' withheld: ${validation.issues.filter((i) => i.level === 'error').map((i) => i.detail).join('; ')}`,
+          `pack '${pack.key}' withheld: ${v.issues.filter((i) => i.level === 'error').map((i) => i.detail).join('; ')}`,
         );
       }
     }
-    // Only validated packs are presented.
-    return built.filter((p) => outcome.packValidations.get(p.key)?.presentable);
+
+    // Second pass renumbers and re-renders, so "Fix Pack N of M" and the
+    // declared prerequisites describe the packs the user actually receives
+    // rather than counting one that was withheld.
+    presentable.forEach((p, i) => { p.ordinal = i + 1; });
+    const presentableKeys = new Set(presentable.map((p) => p.key));
+    for (const p of presentable) {
+      p.dependsOn = p.dependsOn.filter((d) => presentableKeys.has(d));
+    }
+    const finalPrompts = render(presentable);
+    for (const [key, prompts] of finalPrompts) outcome.packPrompts.set(key, prompts);
+
+    return presentable.filter((p) => outcome.packValidations.get(p.key)?.presentable);
   });
   outcome.fixPacks = packs ?? [];
 

@@ -1,0 +1,11 @@
+{
+  "name": "@codelens/cli",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "bin": { "codelens": "./src/bin.ts" },
+  "dependencies": {
+    "@codelens/core": "workspace:*",
+    "@codelens/engine": "workspace:*"
+  }
+}

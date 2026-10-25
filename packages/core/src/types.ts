@@ -132,7 +132,7 @@ export interface Finding {
   /** What a user of the application would experience. */
   userImpact: string;
   likelyRootCause?: string;
-  downstreamConsequences?: string[];
+  downstreamConsequences: string[];
   /** What to change. Defensive guidance only. */
   remediation: string;
   effort: EffortBand;

@@ -187,14 +187,21 @@ export function validateFixPack(input: ValidationInput): ValidationResult {
   }
 
   // --- 8. No destructive operation requested ---
+  //
+  // Scanned against the INSTRUCTION text only. Evidence excerpts quote the
+  // audited repository verbatim, so a CI file that deploys to production, or a
+  // migration that drops a table, legitimately appears inside a fenced block.
+  // Treating a quotation as an instruction withheld an entirely valid pack
+  // during development, which is worse than the risk this check guards against.
   checksRun.push('no_destructive_operations');
+  const instructionText = instructionsOnly(prompt);
   for (const { re, what } of DESTRUCTIVE_PATTERNS) {
-    const m = re.exec(prompt);
+    const m = re.exec(instructionText);
     if (!m) continue;
     // The constraints section legitimately forbids these by name.
     const idx = m.index;
-    const constraintsStart = prompt.indexOf('## F. Engineering constraints');
-    const constraintsEnd = prompt.indexOf('## G. Implementation strategy');
+    const constraintsStart = instructionText.indexOf('## F. Engineering constraints');
+    const constraintsEnd = instructionText.indexOf('## G. Implementation strategy');
     const insideConstraints = constraintsStart !== -1 && idx > constraintsStart && (constraintsEnd === -1 || idx < constraintsEnd);
     if (insideConstraints) continue;
     issues.push({
@@ -320,6 +327,33 @@ function sharedQuotedSubjects(a: string, b: string): string[] {
   const ta = tokens(a);
   const tb = tokens(b);
   return [...ta].filter((t) => tb.has(t));
+}
+
+/**
+ * The prompt reduced to the parts that actually instruct the agent.
+ *
+ * Section C ("Identified problems") is a DESCRIPTION of the repository under
+ * audit. It legitimately quotes that repository's own commands — a trace step
+ * explaining that a CI workflow deploys to production has to say so, and an
+ * evidence excerpt reproduces the line verbatim. Scanning it for destructive
+ * operations reads a quotation as a request: during development that withheld a
+ * perfectly valid Fix Pack because the CI file it was reporting on contained
+ * `vercel deploy --prod`.
+ *
+ * So the scan covers sections A, B and D through J, with fenced blocks and
+ * blockquotes dropped throughout. Those are the parts CodeLens writes as
+ * instructions; everything excluded is either our own provenance caveat or the
+ * audited project speaking.
+ */
+export function instructionsOnly(prompt: string): string {
+  const blank = (m: string) => '\n'.repeat((m.match(/\n/g) ?? []).length);
+  return prompt
+    // Drop the findings description, keeping line count so offsets stay usable.
+    .replace(/##\s*C\.\s*Identified problems[\s\S]*?(?=##\s*D\.\s*Required investigation)/, blank)
+    // Fenced blocks hold quoted source.
+    .replace(/```[\s\S]*?```/g, blank)
+    // Markdown blockquotes hold our provenance caveat.
+    .replace(/^>.*$/gm, '');
 }
 
 /** Depth-first cycle detection from one node. */

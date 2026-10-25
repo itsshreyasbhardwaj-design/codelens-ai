@@ -124,10 +124,10 @@ function findingBlock(f: Finding, index: number): string {
     });
   }
 
-  if (f.downstreamConsequences.length) {
+  if ((f.downstreamConsequences ?? []).length) {
     lines.push('');
     lines.push('**Consequences to keep in mind while fixing.**');
-    for (const c of f.downstreamConsequences) lines.push(`- ${c}`);
+    for (const c of f.downstreamConsequences ?? []) lines.push(`- ${c}`);
   }
 
   lines.push('');
@@ -189,8 +189,9 @@ export function generateFixPackPrompt(
   out.push(stackSummary(ctx.tech) || '- (no technologies were detected with sufficient confidence)');
   out.push('');
   out.push(
-    `The scan indexed ${ctx.coverage.filesIndexed} file(s) and parsed ${ctx.coverage.filesParsed} of them ` +
-    `(${(ctx.coverage.parseRatio * 100).toFixed(0)}% of source files), identifying ${ctx.routeCount} API route(s) ` +
+    `The scan indexed ${ctx.coverage.filesIndexed} file(s) and produced an AST for ${ctx.coverage.filesParsed} of them ` +
+    `(${(ctx.coverage.parseRatio * 100).toFixed(0)}% of the files in languages with deep support; the remainder are ` +
+    `configuration, data, and languages analysed structurally only). It identified ${ctx.routeCount} API route(s) ` +
     `and ${ctx.modelCount} data model(s).`,
   );
   if (ctx.coverage.languagesShallow.length > 0) {
