@@ -38,6 +38,7 @@ const VALIDATION_NOTE: Record<string, string> = {
 
 const ERROR_NOTE: Record<string, string> = {
   present: 'The handler has error handling.',
+  partial: 'Some paths through the handler are guarded and some are not.',
   absent: 'No error handling was found in the handler.',
   unknown: 'Could not be resolved from the handler body.',
 };

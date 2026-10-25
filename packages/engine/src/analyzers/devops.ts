@@ -1,4 +1,4 @@
-import type { Confidence, Evidence, Finding, Severity } from '@codelens/core';
+import type { Evidence, Finding, Severity } from '@codelens/core';
 import type { RepoMap } from '../graph/repomap.ts';
 import type { SourceFile } from '../ingest/normalize.ts';
 import type { Analyzer, AnalyzerContext } from './types.ts';
@@ -298,12 +298,17 @@ function parseImageRef(reference: string): ImageRef {
 /** Base images that already run as a non-root user by convention. */
 const NON_ROOT_IMAGE_RE = /nonroot|non-root|unprivileged|chainguard|distroless|cgr\.dev/i;
 
+/** Regex-escape text that came from a file, so a pattern can never throw. */
+function escapeRe(text: string): string {
+  return text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
 /** A stage that only produces build output and is copied from, not run. */
 function isCopiedFrom(view: DockerView, stage: DockerStage): boolean {
   const names = [stage.name, String(stage.index)].filter((x): x is string => x !== undefined);
   return view.stages.some((s) => s.instructions.some((inst) =>
     (inst.keyword === 'COPY' || inst.keyword === 'ADD')
-    && names.some((n) => new RegExp(`--from=${n}(?:\\s|$)`).test(inst.args))));
+    && names.some((n) => new RegExp(`--from=${escapeRe(n)}(?:\\s|$)`).test(inst.args))));
 }
 
 /** The user this stage runs as, following FROM references between stages. */
@@ -818,6 +823,15 @@ function broadContextCopies(stage: DockerStage): DockerInstruction[] {
   });
 }
 
+/** A .dockerignore glob as a regex, or undefined when it cannot be compiled. */
+function globToRegExp(pattern: string): RegExp | undefined {
+  try {
+    return new RegExp(`^${escapeRe(pattern).replace(/\\\*/g, '[^/]*')}$`);
+  } catch {
+    return undefined;
+  }
+}
+
 /** True when .dockerignore excludes the given path from the build context. */
 function dockerignoreCovers(map: RepoMap, path: string): { covered: boolean; file?: SourceFile } {
   const file = map.files.find((f) => basename(f.path) === '.dockerignore' && f.text !== null);
@@ -829,8 +843,8 @@ function dockerignoreCovers(map: RepoMap, path: string): { covered: boolean; fil
     const pattern = line.replace(/^\.\//, '').replace(/\/$/, '');
     if (pattern === name || pattern === path) return { covered: true, file };
     if (pattern.includes('*')) {
-      const re = new RegExp(`^${pattern.replace(/[.+^${}()|[\]\\]/g, '\\$&').replace(/\*/g, '[^/]*')}$`);
-      if (re.test(name) || re.test(path)) return { covered: true, file };
+      const re = globToRegExp(pattern);
+      if (re && (re.test(name) || re.test(path))) return { covered: true, file };
     }
   }
   return { covered: false, file };
@@ -1464,8 +1478,8 @@ function dependencyPinning(ctx: AnalyzerContext, pipelines: CiView[], views: Doc
 
   if (locks.length === 0) {
     const manifest = manifestViews[0]!;
-    const anchor = map.evidenceAt(manifest.file.path, '"dependencies"', 'dependency ranges declared here, with no lockfile in the snapshot to resolve them')
-      ?? undefined;
+    const anchor = map.evidenceAt(manifest.file.path, '"dependencies"',
+      'dependency ranges declared here, with no lockfile in the snapshot to resolve them');
     const primary = verified(anchor) ?? verified(map.evidenceLine(manifest.file.path, firstContentLine(manifest.file),
       'this manifest declares dependencies and no lockfile is committed alongside it'));
     if (!primary) return out;
@@ -1860,7 +1874,7 @@ function noBackupConfiguration(ctx: AnalyzerContext): Finding[] {
 }
 
 const STRUCTURED_LOG_RE = /\bpino\b|\bwinston\b|\bbunyan\b|\bstructlog\b|\bzerolog\b|\blogrus\b|\bserilog\b|\bmonolog\b|log4j|\btslog\b|\bconsola\b|\bsignale\b|\bloguru\b|\bslog\b|\broarr\b|\bbole\b/i;
-const CONSOLE_CALL_RE = /^(?:console\.(?:log|info|debug|warn|error|trace)|print|println|System\.out\.print)/;
+const CONSOLE_CALL_RE = /^(?:console\.(?:log|info|debug|warn|error|trace)|print|println|System\.out\.print(?:ln)?)$/;
 const SERVER_PATH_RE = /(^|\/)(?:api|server|services?|lib|jobs?|workers?|handlers?|controllers?|routes?|functions?)\//;
 
 function unstructuredLogging(ctx: AnalyzerContext): Finding[] {

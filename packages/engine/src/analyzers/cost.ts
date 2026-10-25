@@ -156,6 +156,14 @@ const PROJECTION_KEYS = new Set([
 const FILTER_KEYS = new Set([
   'where', 'filter', 'query', 'criteria', 'match', 'conditions',
 ]);
+/**
+ * Options that change the order or shape of a whole-table read without
+ * narrowing what it costs. Any other option means the read is doing something
+ * this rule has not accounted for, so it is left alone.
+ */
+const HARMLESS_READ_KEYS = new Set([
+  'orderBy', 'order', 'sort', 'distinct', 'cacheStrategy', 'lean', 'raw', 'nest',
+]);
 const RELATION_OBJECT_KEYS = new Set(['include', 'with']);
 const RELATION_LIST_KEYS = new Set(['relations', 'populate', 'joins', 'joinedload']);
 
@@ -556,6 +564,33 @@ function modelCalls(
   return out;
 }
 
+/**
+ * Whether a model request carries an output ceiling.
+ *
+ * `undefined` means the question could not be answered from the call site — the
+ * options arrived as a variable, or the arguments could not be read — and the
+ * rules treat that as a reason to stay silent rather than as an absence.
+ */
+function outputCapPresent(view: CodeView, mc: ModelCall): boolean | undefined {
+  const argText = argumentText(view, mc.call);
+  if (argText === undefined) return undefined;
+  if (mc.kind === 'http') {
+    // The body is inline (that is a condition of detection), so the whole
+    // argument list is the right thing to read.
+    return OUTPUT_CAP_RE.test(argText);
+  }
+  // Python and Ruby SDKs pass the request as keyword arguments rather than as an
+  // object, so there is no object literal to read. Judge the argument list
+  // directly, and only when the request itself is written at the call site.
+  if (mc.mod.language === 'python' || mc.mod.language === 'ruby') {
+    if (!/\b(?:model|messages|prompt|contents|input|system)\s*=/.test(argText)) return undefined;
+    return OUTPUT_CAP_RE.test(argText);
+  }
+  const body = optionsBody(argText);
+  if (body === undefined) return undefined;
+  return OUTPUT_CAP_RE.test(body);
+}
+
 /** The route whose handler contains a line, when the file serves traffic. */
 function routeFor(map: RepoMap, path: string, line: number): ApiEndpoint | undefined {
   const candidates = map.routes.filter((r) => r.file === path);
@@ -592,7 +627,7 @@ export const costAnalyzer: Analyzer = {
     const { map } = ctx;
     const views = new Map<string, CodeView | undefined>();
     const aiModules = directAiModules(map);
-    const calls = modelCalls(map, aiModules);
+    const calls = modelCalls(map, aiModules, views);
 
     const findings: Finding[] = [];
     findings.push(...uncappedModelOutput(ctx, calls, views));
@@ -630,18 +665,20 @@ function uncappedModelOutput(
   const { map } = ctx;
   const out: Finding[] = [];
 
-  for (const { mod, call, receiverResolved } of calls) {
-    if (!CAP_IN_ARGUMENTS.some((re) => re.test(call.callee))) continue;
+  for (const mc of calls) {
+    const { mod, call, receiverResolved } = mc;
+    if (mc.kind === 'sdk' && !CAP_IN_ARGUMENTS.some((re) => re.test(call.callee))) continue;
     const view = viewFor(map, mod.path, views);
     if (!view) continue;
 
-    const body = optionsBody(argumentText(view, call));
-    if (body === undefined) continue;          // options not readable: stay silent
-    if (OUTPUT_CAP_RE.test(body)) continue;    // a ceiling is set
+    const capped = outputCapPresent(view, mc);
+    if (capped === undefined) continue; // not readable at the call site: stay silent
+    if (capped) continue;               // a ceiling is set
 
+    const argText = argumentText(view, call) ?? '';
     const route = routeFor(map, mod.path, call.line);
     const reachableAnonymously = !!route && route.authRequired !== 'required';
-    const streaming = /\bstream\s*:\s*true\b/.test(body) || /stream$/i.test(lastSegment(call.callee));
+    const streaming = /\bstream\s*:\s*true\b/.test(argText) || /stream$/i.test(lastSegment(call.callee));
 
     const evidence = verifiedOnly([
       map.evidenceLine(mod.path, call.line,
@@ -655,10 +692,15 @@ function uncappedModelOutput(
 
     const severity: Severity = reachableAnonymously ? 'high' : 'medium';
     const confidence: Confidence = receiverResolved ? 'strong' : 'moderate';
+    const subject = mc.kind === 'http'
+      ? `The direct ${call.callee}() call to the provider API`
+      : `The options passed to ${call.callee}()`;
 
     out.push(ctx.finding({
       ruleId: 'cost.ai.output_not_capped',
-      title: `${call.callee}() requests inference with no output token ceiling`,
+      title: mc.kind === 'http'
+        ? `${call.callee}() posts a provider inference request with no output token ceiling`
+        : `${call.callee}() requests inference with no output token ceiling`,
       severity,
       confidence,
       status: 'needs_runtime_verification',
@@ -680,7 +722,7 @@ function uncappedModelOutput(
         }
         : undefined,
       explanation:
-        `The options passed to ${call.callee}() contain no output ceiling — no max_tokens, max_output_tokens, or equivalent for this provider. ` +
+        `${subject} carries no output ceiling — no max_tokens, max_output_tokens, or equivalent for this provider. ` +
         'Output tokens are billed per token and their number is decided by the model, not by this code, so the cost of a single request has no upper bound in the source. ' +
         (streaming ? 'The response is streamed, which changes when the tokens arrive but not how many are paid for. ' : '') +
         (reachableAnonymously
@@ -735,13 +777,13 @@ function modelCallPerItem(
   const { map } = ctx;
   const out: Finding[] = [];
 
-  for (const { mod, call, receiverResolved } of calls) {
+  for (const mc of calls) {
+    const { mod, call, receiverResolved } = mc;
     if (!call.insideLoop) continue;
     const view = viewFor(map, mod.path, views);
     if (!view) continue;
 
-    const body = optionsBody(argumentText(view, call));
-    const capped = body !== undefined && OUTPUT_CAP_RE.test(body);
+    const cap = outputCapPresent(view, mc);
     const route = routeFor(map, mod.path, call.line);
 
     const evidence = verifiedOnly([
@@ -762,9 +804,11 @@ function modelCallPerItem(
       explanation:
         `${call.callee}() is called inside a loop, so the number of billed requests equals the number of elements iterated. ` +
         'Provider pricing is per request and per token, so both the request count and the total token count scale with the collection — and the collection size is a property of the data, which this scan cannot read. ' +
-        (capped
+        (cap === true
           ? 'Each individual request does carry an output ceiling, which bounds the cost of one request but not the number of them. '
-          : 'No output ceiling was found on the request either, so neither the count nor the size of the responses is bounded. ') +
+          : cap === false
+            ? 'No output ceiling was found on the request either, so neither the count nor the size of the responses is bounded. '
+            : '') +
         (route ? `The loop runs inside the ${route.method} ${route.path} handler, so it repeats per inbound request as well. ` : ''),
       userImpact:
         'The feature gets slower and more expensive in proportion to how much data the user is working with, and the first person to hit a large collection is the one who discovers the provider rate limit — at which point the operation fails part-way through, having already been paid for.',
@@ -1173,12 +1217,14 @@ function wholeTableAllColumns(
       const body = argText.trim() === '' ? '' : optionsBody(argText);
       if (body === undefined) continue;
 
+      // The claim is "no filter, no ceiling, no projection", so every top-level
+      // option has to be accounted for. A key that is none of those — or an
+      // argument whose keys cannot be read at all, such as a spread of options
+      // assembled elsewhere — means the claim cannot be made, and the call is
+      // left alone rather than guessed at.
       const keys = topLevelEntries(body).map((e) => e.key);
-      if (keys.some((k) => FILTER_KEYS.has(k))) continue;      // filtered read
-      if (keys.some((k) => ROW_CEILING_KEYS.has(k))) continue; // bounded read
-      if (keys.some((k) => PROJECTION_KEYS.has(k))) continue;  // projected columns
-      // A bare non-empty argument is probably a filter (`find({ status: 'x' })`).
-      if (body.trim() !== '' && keys.length > 0) continue;
+      if (body.trim() !== '' && keys.length === 0) continue;
+      if (keys.some((k) => !HARMLESS_READ_KEYS.has(k))) continue;
 
       const sym = enclosingFunction(mod, call.line);
       const columnCount = model.fields.length;

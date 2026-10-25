@@ -74,7 +74,7 @@ function stackSummary(tech: TechDetection[]): string {
     list.push(t.version ? `${t.name} ${t.version}` : t.name);
     byKind.set(t.kind, list);
   }
-  const order = ['language', 'frontend', 'backend', 'database', 'orm', 'ai', 'testing', 'build', 'infrastructure', 'ci', 'package_manager'];
+  const order = ['language', 'frontend', 'backend', 'database', 'orm', 'ai', 'library', 'testing', 'build', 'infrastructure', 'ci', 'package_manager'];
   const lines: string[] = [];
   for (const kind of order) {
     const list = byKind.get(kind);

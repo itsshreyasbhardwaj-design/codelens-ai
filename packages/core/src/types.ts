@@ -164,7 +164,11 @@ export const CONFIDENCE_WEIGHT: Record<Confidence, number> = {
 
 export type TechKind =
   | 'language' | 'frontend' | 'backend' | 'database' | 'orm'
-  | 'infrastructure' | 'ai' | 'testing' | 'build' | 'ci' | 'package_manager';
+  | 'infrastructure' | 'ai' | 'testing' | 'build' | 'ci' | 'package_manager'
+  // A notable library that is not itself an application framework, such as an
+  // auth or validation library. Kept distinct so prose describing the project
+  // does not call it a framework.
+  | 'library';
 
 export interface TechDetection {
   kind: TechKind;

@@ -1,7 +1,7 @@
 'use client';
 
 import Link from 'next/link';
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from 'react';
 import {
   Caveat,
   ConfidencePill,
@@ -12,7 +12,7 @@ import {
   StatusPill,
   Tag,
 } from '../../../components/ui.tsx';
-import { CATEGORY_LABEL, formatRelative, pluralize, SEVERITY_ORDER, severityStyle } from '../../../lib/format.ts';
+import { CATEGORY_LABEL, formatRelative, pluralize, severityStyle } from '../../../lib/format.ts';
 
 /**
  * Fix Studio, client half.
@@ -247,7 +247,7 @@ type CopyState =
   | { kind: 'manual'; target: CopyTarget; note: string; text: string }
   | { kind: 'failed'; target: CopyTarget; note: string };
 
-const BUTTON: React.CSSProperties = {
+const BUTTON: CSSProperties = {
   font: 'inherit',
   fontSize: '0.84rem',
   fontWeight: 550,
@@ -259,7 +259,7 @@ const BUTTON: React.CSSProperties = {
   cursor: 'pointer',
 };
 
-const BUTTON_PRIMARY: React.CSSProperties = {
+const BUTTON_PRIMARY: CSSProperties = {
   ...BUTTON,
   background: 'var(--accent)',
   borderColor: 'var(--accent)',
@@ -296,7 +296,9 @@ export function Studio({
 
   // A pack may not have been generated in every format. Fall back to one it has
   // rather than showing a format switch that leads nowhere.
-  const format = pack.formats.includes(preferredFormat) ? preferredFormat : pack.formats[0];
+  const format: string | undefined = pack.formats.includes(preferredFormat)
+    ? preferredFormat
+    : pack.formats[0];
 
   const [prompt, setPrompt] = useState<
     { state: 'ready'; text: string } | { state: 'loading' } | { state: 'error'; message: string } | { state: 'none' }
@@ -416,7 +418,7 @@ export function Studio({
     const parts: string[] = [];
     try {
       for (const candidate of packs) {
-        const candidateFormat = candidate.formats.includes(preferredFormat)
+        const candidateFormat: string | undefined = candidate.formats.includes(preferredFormat)
           ? preferredFormat
           : candidate.formats[0];
         if (candidateFormat === undefined) continue;

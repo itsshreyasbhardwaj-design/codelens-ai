@@ -53,10 +53,10 @@ export const NODE_CATALOG: TechSpec[] = [
   { name: 'Sequelize', kind: 'orm', packages: ['sequelize'] },
   { name: 'Knex', kind: 'orm', packages: ['knex'] },
   // Auth
-  { name: 'NextAuth / Auth.js', kind: 'backend', packages: ['next-auth', '@auth/core'] },
-  { name: 'Clerk', kind: 'backend', packages: ['@clerk/nextjs', '@clerk/clerk-sdk-node'] },
-  { name: 'Passport', kind: 'backend', packages: ['passport'] },
-  { name: 'jsonwebtoken', kind: 'backend', packages: ['jsonwebtoken', 'jose'] },
+  { name: 'NextAuth / Auth.js', kind: 'library', packages: ['next-auth', '@auth/core'] },
+  { name: 'Clerk', kind: 'library', packages: ['@clerk/nextjs', '@clerk/clerk-sdk-node'] },
+  { name: 'Passport', kind: 'library', packages: ['passport'] },
+  { name: 'jsonwebtoken', kind: 'library', packages: ['jsonwebtoken', 'jose'] },
   // AI
   { name: 'OpenAI SDK', kind: 'ai', packages: ['openai'] },
   { name: 'Anthropic SDK', kind: 'ai', packages: ['@anthropic-ai/sdk'] },
@@ -105,5 +105,5 @@ export const PYTHON_CATALOG: TechSpec[] = [
   { name: 'sentence-transformers', kind: 'ai', packages: ['sentence-transformers'] },
   { name: 'ChromaDB', kind: 'ai', packages: ['chromadb'] },
   { name: 'pytest', kind: 'testing', packages: ['pytest'] },
-  { name: 'Pydantic', kind: 'backend', packages: ['pydantic'] },
+  { name: 'Pydantic', kind: 'library', packages: ['pydantic'] },
 ];
