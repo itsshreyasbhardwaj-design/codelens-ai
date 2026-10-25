@@ -115,6 +115,24 @@ const CAP_IN_ARGUMENTS = [
 const OUTPUT_CAP_RE =
   /\b(?:max_tokens|maxTokens|max_output_tokens|maxOutputTokens|max_completion_tokens|maxCompletionTokens|max_new_tokens|maxNewTokens|max_tokens_to_sample|maxTokensToSample|maxOutputTokenCount|max_length|maxLength)\b/;
 
+/**
+ * Hosts that bill per token. A model served from localhost or through Ollama is
+ * deliberately absent: local inference costs compute the project already pays
+ * for, so an uncapped local call is a performance question, not a spend one.
+ */
+const PROVIDER_HOST_RE =
+  /\b(?:api\.openai\.com|api\.anthropic\.com|api\.cohere\.(?:ai|com)|generativelanguage\.googleapis\.com|[\w.-]+\.openai\.azure\.com|api\.mistral\.ai|api\.groq\.com|api\.together\.(?:xyz|ai)|api\.replicate\.com|api\.perplexity\.ai|api\.deepseek\.com|api\.x\.ai|api-inference\.huggingface\.co|bedrock-runtime\.[\w-]+\.amazonaws\.com|api\.fireworks\.ai|openrouter\.ai)\b/;
+
+/** Provider endpoints that are billed but have no output-length parameter. */
+const NON_COMPLETION_PATH_RE =
+  /\/(?:embeddings|moderations|files|images|audio|batches|fine_tuning|assistants)\b/;
+
+/** The request body is written inline at the call site, so it can be judged. */
+const INLINE_REQUEST_BODY_RE = /\b(?:model|messages|prompt|contents|system|input)\s*:/;
+
+/** Calls that put a request on the network. */
+const NETWORK_LEAVES = new Set(['fetch', 'post', 'put', 'request', 'send']);
+
 /** Reading, recording, or counting token consumption anywhere. */
 const USAGE_ACCOUNTING_RE =
   /\b(?:usage|usageMetadata|usage_metadata|total_tokens|totalTokens|prompt_tokens|promptTokens|completion_tokens|completionTokens|input_tokens|inputTokens|output_tokens|outputTokens|tokenCount|token_count|countTokens|count_tokens|tiktoken|tokensUsed|tokens_used|token_usage|promptCost|costCents|cost_cents|llmCost|llm_cost)\b/;
@@ -322,9 +340,19 @@ function optionsBody(argText: string | undefined): string | undefined {
   return balancedSlice(argText, open);
 }
 
-function enclosingSymbol(mod: ParsedModule, line: number): SymbolInfo | undefined {
+/**
+ * The innermost *function* a line sits in.
+ *
+ * Deliberately not the innermost symbol of any kind: a multi-line
+ * `const x = await query({...})` is itself a symbol, and treating it as the
+ * enclosing scope would hide everything the function does with the result —
+ * which is exactly what the over-fetch rule has to read before it claims a
+ * value is unused.
+ */
+function enclosingFunction(mod: ParsedModule, line: number): SymbolInfo | undefined {
   let best: SymbolInfo | undefined;
   for (const s of mod.symbols) {
+    if (s.kind !== 'function' && s.kind !== 'arrow' && s.kind !== 'method') continue;
     if (s.startLine <= line && s.endLine >= line) {
       if (!best || s.endLine - s.startLine < best.endLine - best.startLine) best = s;
     }
@@ -390,6 +418,8 @@ function productionModules(map: RepoMap): ParsedModule[] {
 interface ModelCall {
   mod: ParsedModule;
   call: CallRef;
+  /** `sdk` for a provider client call, `http` for a direct call to a provider URL. */
+  kind: 'sdk' | 'http';
   /** True when the receiver was resolved to a provider client. */
   receiverResolved: boolean;
 }
@@ -460,8 +490,29 @@ function aiClientRoots(map: RepoMap, mod: ParsedModule, aiModules: Set<string>):
  * callee segment matching a declared data model is rejected outright, so a
  * write to a `messages` table is never counted as inference.
  */
-function modelCalls(map: RepoMap, aiModules: Set<string>): ModelCall[] {
+function modelCalls(
+  map: RepoMap,
+  aiModules: Set<string>,
+  views: Map<string, CodeView | undefined>,
+): ModelCall[] {
   const out: ModelCall[] = [];
+
+  // A direct HTTP call to a provider endpoint is metered inference just as much
+  // as an SDK call, and plenty of projects skip the SDK. The URL in the
+  // arguments is the evidence, so this pass needs no import gate — but the
+  // request body must be written inline, or there is nothing to judge.
+  for (const mod of productionModules(map)) {
+    const view = viewFor(map, mod.path, views);
+    if (!view) continue;
+    for (const call of mod.calls) {
+      if (!NETWORK_LEAVES.has(lastSegment(call.callee))) continue;
+      const argText = argumentText(view, call);
+      if (!argText || !PROVIDER_HOST_RE.test(argText)) continue;
+      if (NON_COMPLETION_PATH_RE.test(argText)) continue;
+      if (!INLINE_REQUEST_BODY_RE.test(argText)) continue;
+      out.push({ mod, call, kind: 'http', receiverResolved: true });
+    }
+  }
 
   for (const mod of productionModules(map)) {
     const importsAi = mod.imports.some(
@@ -490,15 +541,15 @@ function modelCalls(map: RepoMap, aiModules: Set<string>): ModelCall[] {
         || segs.some((s) => /^(?:openai|anthropic|claude|gemini|genai|bedrock|groq|mistral|cohere|llm|model)$/i.test(s)));
 
       if (segs.length === 1 && importedNames.has(segs[0]!)) {
-        out.push({ mod, call, receiverResolved: true });
+        out.push({ mod, call, kind: 'sdk', receiverResolved: true });
         continue;
       }
       if (MODEL_CALL_UNAMBIGUOUS.some((re) => re.test(call.callee))) {
-        out.push({ mod, call, receiverResolved });
+        out.push({ mod, call, kind: 'sdk', receiverResolved });
         continue;
       }
       if (receiverResolved && MODEL_CALL_NEEDS_RECEIVER.some((re) => re.test(call.callee))) {
-        out.push({ mod, call, receiverResolved: true });
+        out.push({ mod, call, kind: 'sdk', receiverResolved: true });
       }
     }
   }
@@ -511,7 +562,7 @@ function routeFor(map: RepoMap, path: string, line: number): ApiEndpoint | undef
   if (candidates.length === 0) return undefined;
   const mod = map.modules.get(path);
   if (mod?.parsed) {
-    const sym = enclosingSymbol(mod, line);
+    const sym = enclosingFunction(mod, line);
     if (sym) {
       const exact = candidates.find((r) => r.handlerSymbol === sym.name);
       if (exact) return exact;
@@ -763,7 +814,7 @@ function unboundedPromptContext(
     const argText = argumentText(view, call);
     if (!argText) continue;
 
-    const sym = enclosingSymbol(mod, call.line);
+    const sym = enclosingFunction(mod, call.line);
     if (!sym) continue;
 
     for (const producer of mod.calls) {
@@ -902,7 +953,7 @@ function noUsageAccounting(ctx: AnalyzerContext, calls: ModelCall[]): Finding[] 
       complete: unparsed === 0,
     },
     explanation:
-      `${calls.length} model request${calls.length === 1 ? '' : 's'} in this project spend provider tokens, and nothing in the code records how many. ` +
+      `${calls.length} model request${calls.length === 1 ? '' : 's'} in this project spend${calls.length === 1 ? 's' : ''} provider tokens, and nothing in the code records how many. ` +
       'Provider responses carry usage counts, and none of them is read, stored, or attributed to a user, tenant, or feature. ' +
       'The consequence is not a slower application but a blind one: spend can only be seen in aggregate on the provider invoice, after it has happened, with no way to say which feature or which caller caused it.' +
       (unparsed > 0
@@ -982,7 +1033,7 @@ function relationsFetchedButUnused(
       const relations = requested.filter((name) => !model.fields.some((f) => f.name === name));
       if (relations.length === 0) continue;
 
-      const sym = enclosingSymbol(mod, call.line);
+      const sym = enclosingFunction(mod, call.line);
       if (!sym) continue;
       const region = linesOf(view, sym.startLine, sym.endLine);
       const resultName = assignedNameAt(view, call.line);
@@ -1047,7 +1098,7 @@ function relationsFetchedButUnused(
         trace: {
           kind: 'call',
           steps: [
-            { file: mod.path, line: call.line, symbol: call.inSymbol, detail: `${call.callee}() requests the ${unused.join(', ')} relation(s)` },
+            { file: mod.path, line: call.line, symbol: call.inSymbol, detail: `${call.callee}() requests the ${unused.join(', ')} relation${unused.length === 1 ? '' : 's'} of ${model.name}` },
             { file: model.file, detail: `${unused.join(', ')} ${unused.length === 1 ? 'is' : 'are'} declared as a relation on ${model.name}, so the database joins and returns those rows` },
             { file: mod.path, line: sym.startLine, symbol: sym.name, detail: `the result is bound to '${resultName}' and never leaves this function` },
             { file: mod.path, line: sym.startLine, symbol: sym.name, detail: `no member access or destructuring of ${unused.join(', ')} appears anywhere in the function body` },
@@ -1129,7 +1180,7 @@ function wholeTableAllColumns(
       // A bare non-empty argument is probably a filter (`find({ status: 'x' })`).
       if (body.trim() !== '' && keys.length > 0) continue;
 
-      const sym = enclosingSymbol(mod, call.line);
+      const sym = enclosingFunction(mod, call.line);
       const columnCount = model.fields.length;
       const wideColumns = model.fields
         .filter((f) => /text|json|jsonb|blob|bytes|binary|xml|clob/i.test(f.type ?? ''))

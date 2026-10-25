@@ -155,7 +155,9 @@ interface ManifestView {
 /** package.json scripts, which say what the project builds and starts. */
 function manifests(map: RepoMap): ManifestView[] {
   const out: ManifestView[] = [];
-  for (const f of readable(map, (x) => x.role === 'manifest')) {
+  const byDepth = readable(map, (x) => x.role === 'manifest')
+    .sort((a, b) => a.path.split('/').length - b.path.split('/').length || a.path.length - b.path.length);
+  for (const f of byDepth) {
     const scripts = new Map<string, string>();
     if (basename(f.path) === 'package.json') {
       try {
@@ -1753,7 +1755,9 @@ const MONITORING_RE = new RegExp([
 
 function noMonitoring(ctx: AnalyzerContext, pipelines: CiView[]): Finding[] {
   const { map } = ctx;
-  if (map.routes.length === 0 && deploymentConfigFiles(map).length === 0) return [];
+  // Only a service that serves requests is in scope: a library or CLI that
+  // happens to ship a container does not need application monitoring.
+  if (map.routes.length === 0) return [];
   if (presentAnywhere(map, MONITORING_RE)) return [];
   // Convention-named instrumentation files count as monitoring configuration.
   if (map.files.some((f) => /^(?:instrumentation|sentry\.|otel|telemetry|monitoring|tracing)/.test(basename(f.path)))) return [];

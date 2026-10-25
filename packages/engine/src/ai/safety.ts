@@ -84,7 +84,12 @@ const INJECTION_SIGNALS: Array<{ re: RegExp; what: string }> = [
   { re: /\bignore\s+(?:all\s+)?(?:your\s+|the\s+)?(?:previous\s+|above\s+|prior\s+)?instructions?\b/i, what: 'instruction to ignore prior instructions' },
   { re: /\bdisregard\s+(?:all\s+)?(?:previous|above|prior|the)\b/i, what: 'instruction to disregard prior context' },
   { re: /\byou\s+are\s+now\s+(?:a|an|in)\b/i, what: 'attempt to reassign the assistant role' },
-  { re: /\b(?:system|developer)\s*(?:prompt|message)\s*[:=]/i, what: 'forged system or developer message' },
+  // A forged system turn looks like `system: you are now …`. A variable named
+  // `systemPrompt` is ordinary code — and extremely common in exactly the AI
+  // codebases this product audits — so the separator and a following
+  // instruction are both required.
+  { re: /\b(?:system|developer)[\s_-]+(?:prompt|message)\s*:\s*["'`]?\s*(?:you\b|your\b|ignore\b|disregard\b|act as\b|from now\b|forget\b)/i, what: 'forged system or developer message' },
+  { re: /^\s*(?:system|assistant)\s*:\s*(?:you are|you must|ignore|disregard|forget)/im, what: 'forged conversation turn' },
   { re: /\breport\s+(?:no|zero)\s+(?:vulnerabilit|issue|problem|finding)/i, what: 'instruction to suppress findings' },
   { re: /\bmark\s+(?:this|all)\s+(?:as\s+)?(?:safe|secure|clean|false\s+positive)/i, what: 'instruction to mark code as safe' },
   { re: /\b(?:reveal|print|output|disclose)\s+(?:your\s+)?(?:system\s+prompt|instructions|secrets?|api[_\s-]?keys?|environment)/i, what: 'attempt to extract secrets or the system prompt' },
