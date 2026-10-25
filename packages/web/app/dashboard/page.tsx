@@ -351,13 +351,13 @@ export default function DashboardPage() {
               </p>
             </EmptyState>
           ) : (
-            {/*
-              A block list, not a grid. An auto-sized grid track takes its floor
-              from the widest item's min-content width, which lets the scorecard
-              table inside a card push the whole page into a horizontal scroll at
-              phone width. Block flow sizes from the container instead, so the
-              table scrolls inside its own container as intended.
-            */}
+            /*
+             * A block list, not a grid. An auto-sized grid track takes its floor
+             * from the widest item's min-content width, which lets the scorecard
+             * table inside a card push the whole page into a horizontal scroll at
+             * phone width. Block flow sizes from the container instead, so the
+             * table scrolls inside its own container as intended.
+             */
             <ul style={{ listStyle: 'none', margin: 0, padding: 0 }}>
               {projects.map((p, i) => (
                 <li key={p.id} style={{ marginBottom: i === projects.length - 1 ? 0 : '0.85rem' }}>
