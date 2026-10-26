@@ -1,5 +1,6 @@
 import { NextResponse } from 'next/server';
 import { AuthUnavailable, EmailTaken, issueSession, register, SESSION_COOKIE } from '@codelens/engine/db/auth.ts';
+import { grantMonthlyAllowance } from '@codelens/engine/billing/credits.ts';
 import { db } from '../../../lib/store.ts';
 
 export async function POST(request: Request): Promise<NextResponse> {
@@ -19,6 +20,12 @@ export async function POST(request: Request): Promise<NextResponse> {
       password: body.password,
       displayName: body.displayName,
     });
+    // The first month's credits land now rather than when the first scan
+    // starts, so a new account's billing page shows the balance it actually
+    // has. Idempotent per calendar month, and the scan path grants again on
+    // rollover, so this neither double-grants nor is the only grant.
+    grantMonthlyAllowance(db(), account.organizationId, new Date().toISOString());
+
     const token = issueSession({
       userId: account.userId,
       organizationId: account.organizationId,

@@ -1612,6 +1612,33 @@ function unusedIntegrations(c: Ctx): Finding[] {
   return out;
 }
 
+/**
+ * The full source text of the call starting at `line`, paren-balanced.
+ *
+ * `moduleText` is already comment-stripped, so a comment mentioning a timeout
+ * cannot suppress the finding — the same discipline the header rules needed.
+ * Bounded so a malformed file cannot make this walk the whole module.
+ */
+function callSourceText(moduleText: string, line: number): string {
+  const lines = moduleText.split('\n');
+  const start = line - 1;
+  if (start < 0 || start >= lines.length) return '';
+
+  let depth = 0;
+  let seenOpen = false;
+  const parts: string[] = [];
+  for (let i = start; i < Math.min(lines.length, start + 60); i++) {
+    const text = lines[i] ?? '';
+    parts.push(text);
+    for (const ch of text) {
+      if (ch === '(') { depth++; seenOpen = true; }
+      else if (ch === ')') depth--;
+    }
+    if (seenOpen && depth <= 0) break;
+  }
+  return parts.join(' ');
+}
+
 // --------------------------------------------- 11. external calls without timeout ---
 
 function externalCallsWithoutTimeout(c: Ctx): Finding[] {
@@ -1631,7 +1658,13 @@ function externalCallsWithoutTimeout(c: Ctx): Finding[] {
       if (leaf !== 'fetch' && !/^(?:axios|got|ky)$/.test(call.callee.split('.')[0] ?? '')) continue;
       const first = call.args[0] ?? '';
       if (!/^['"`]https?:\/\//.test(first.trim())) continue;
-      const options = call.args.join(' ');
+      // `call.args` is truncated by the parser (MAX_ARG), so an options object
+      // with a large `body` can push `signal` out of the captured text. Reading
+      // the call's own source back from the file is what makes this rule
+      // trustworthy: without it, every well-configured call with a long body is
+      // reported, and a high-volume false positive teaches people to ignore the
+      // rule entirely.
+      const options = `${call.args.join(' ')} ${callSourceText(moduleText, call.line)}`;
       if (/\bsignal\b|\btimeout\b|AbortSignal|AbortController|deadline/i.test(options)) continue;
       if (reported.has(call.line)) continue;
       reported.add(call.line);

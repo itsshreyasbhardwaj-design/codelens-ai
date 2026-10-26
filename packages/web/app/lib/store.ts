@@ -2,6 +2,7 @@ import 'server-only';
 import { existsSync, mkdirSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { Db } from '@codelens/engine/db/index.ts';
+import { seedPlans } from '@codelens/engine/billing/plans.ts';
 
 /**
  * Server-side data access for the web application.
@@ -58,6 +59,12 @@ export function db(): Db {
   mkdirSync(dirname(DB_PATH), { recursive: true });
   const d = new Db(DB_PATH);
   d.migrate();
+  // The plan catalogue is reference data, not user data: without it
+  // `planForOrganization` has no free plan to fall back to and every
+  // entitlement check fails. Seeded here rather than inside `migrate()` to keep
+  // the engine's billing module out of the database module's imports, and
+  // `seedPlans` never overwrites a price an operator has edited.
+  seedPlans(d);
   cached = d;
   return d;
 }

@@ -56,9 +56,35 @@ export interface ScanRequest {
   dynamicVerify?: { enabled: boolean; reason?: string };
   /** Resubmitting the same key must not start a second scan. */
   idempotencyKey?: string;
+  /**
+   * Credit metering for the AI layer only.
+   *
+   * Passed in as functions rather than a database handle so the orchestrator
+   * stays storage-agnostic and testable without a billing schema. Omitting it
+   * runs the AI layer unmetered, which is what the CLI and the test suite want.
+   * Deterministic analysis is never metered: see `canUseAi`.
+   */
+  aiCredits?: AiCreditHooks;
   /** Checked between stages. */
   isCancelled?: () => boolean;
   onStageChange?: (stage: StageResult) => void;
+}
+
+export interface AiCreditHooks {
+  /** Ceiling to hold, in credits, for a scan of this size. */
+  estimate(files: number): number;
+  /** Hold the ceiling, or refuse with a reason the user can act on. */
+  reserve(amount: number, scanId: string):
+    | { ok: true; reservationId: string }
+    | { ok: false; reason: string };
+  /**
+   * Charge metered usage and return the unused remainder.
+   *
+   * Zero usage returns the whole hold, so there is no separate release hook.
+   * A hold left behind by a crashed process is recovered by
+   * `releaseStaleReservations`, not from here.
+   */
+  settle(reservationId: string, tokensIn: number, tokensOut: number): void;
 }
 
 export interface ScanOutcome {
@@ -289,8 +315,23 @@ export async function runScan(req: ScanRequest): Promise<ScanOutcome> {
   // ----------------------------------------- 8. AI semantic investigation ---
   const client = new ModelClient(aiConfig);
   const aiUnavailable = client.unavailableReason();
-  if (aiUnavailable) {
-    tracker.skip('ai_semantic_investigation', aiUnavailable);
+
+  // Credits are held before the layer runs and settled against metered usage
+  // after it. A refusal skips this one stage with the reason: the other eleven
+  // have already done their work and the scan is still worth delivering.
+  let reservationId: string | undefined;
+  let creditRefusal: string | undefined;
+  if (!aiUnavailable && req.aiCredits) {
+    const ceiling = req.aiCredits.estimate(snapshot.files.length);
+    if (ceiling > 0) {
+      const held = req.aiCredits.reserve(ceiling, scanId);
+      if (held.ok) reservationId = held.reservationId;
+      else creditRefusal = held.reason;
+    }
+  }
+
+  if (aiUnavailable ?? creditRefusal) {
+    tracker.skip('ai_semantic_investigation', aiUnavailable ?? creditRefusal!);
     emit('ai_semantic_investigation');
   } else {
     const aiReport = await runStage('ai_semantic_investigation', () => investigate(map, client));
@@ -300,6 +341,20 @@ export async function runScan(req: ScanRequest): Promise<ScanOutcome> {
       for (const w of aiReport.warnings) tracker.warn('ai_semantic_investigation', w);
       for (const r of aiReport.rejected) {
         tracker.warn('ai_semantic_investigation', `rejected a model finding: ${r.reason}`);
+      }
+    }
+    if (reservationId && req.aiCredits) {
+      const { tokensIn, tokensOut } = client.usage;
+      // Settled even when the stage failed: tokens already spent at the
+      // provider are a real cost, and the hold must not be left dangling.
+      // Nothing was spent -> settling zero returns the whole hold.
+      try {
+        req.aiCredits.settle(reservationId, tokensIn, tokensOut);
+      } catch (e) {
+        tracker.warn(
+          'ai_semantic_investigation',
+          `could not settle the credit reservation: ${e instanceof Error ? e.message : String(e)}`,
+        );
       }
     }
   }

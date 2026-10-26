@@ -13,7 +13,20 @@ import { fileURLToPath } from 'node:url';
  */
 
 const HERE = dirname(fileURLToPath(import.meta.url));
-export const SCHEMA_VERSION = 1;
+export const SCHEMA_VERSION = 2;
+
+/**
+ * Migrations beyond the baseline, in order. Adding one means adding a file in
+ * `migrations/` and a line here — the list is explicit rather than a directory
+ * scan, so a stray file cannot silently become a migration.
+ */
+const MIGRATIONS: Array<{ version: number; file: string }> = [
+  { version: 2, file: '002_billing.sql' },
+];
+
+function pendingMigrations(applied: Set<number>): Array<{ version: number; file: string }> {
+  return MIGRATIONS.filter((m) => !applied.has(m.version)).sort((a, b) => a.version - b.version);
+}
 
 export type Row = Record<string, unknown>;
 
@@ -26,15 +39,55 @@ export class Db {
     this.raw.exec('PRAGMA journal_mode = WAL');
   }
 
+  /**
+   * Apply every migration this build carries that the database has not seen.
+   *
+   * Version 1 is `schema.sql`, which is written with IF NOT EXISTS throughout
+   * and is safe to re-run. Later migrations are numbered files in `migrations/`
+   * and are applied exactly once each, inside a transaction, so a statement
+   * that cannot be repeated — an ALTER TABLE, say — runs only on the upgrade
+   * that introduces it.
+   */
   migrate(): void {
-    const sql = readFileSync(join(HERE, 'schema.sql'), 'utf8');
-    this.raw.exec(sql);
-    const applied = this.raw.prepare('SELECT version FROM schema_migrations WHERE version = ?').get(SCHEMA_VERSION);
-    if (!applied) {
-      this.raw
-        .prepare('INSERT INTO schema_migrations (version, applied_at) VALUES (?, ?)')
-        .run(SCHEMA_VERSION, new Date().toISOString());
+    // The baseline also creates schema_migrations itself.
+    this.raw.exec(readFileSync(join(HERE, 'schema.sql'), 'utf8'));
+    this.recordVersion(1);
+
+    for (const { version, file } of pendingMigrations(this.appliedVersions())) {
+      const sql = readFileSync(join(HERE, 'migrations', file), 'utf8');
+      this.raw.exec('BEGIN');
+      try {
+        this.raw.exec(sql);
+        this.recordVersion(version);
+        this.raw.exec('COMMIT');
+      } catch (e) {
+        this.raw.exec('ROLLBACK');
+        throw new Error(`migration ${file} failed: ${(e as Error).message}`);
+      }
     }
+  }
+
+  private appliedVersions(): Set<number> {
+    return new Set(
+      (this.raw.prepare('SELECT version FROM schema_migrations').all() as Array<{ version: number }>)
+        .map((r) => Number(r.version)),
+    );
+  }
+
+  private recordVersion(version: number): void {
+    this.raw
+      .prepare('INSERT OR IGNORE INTO schema_migrations (version, applied_at) VALUES (?, ?)')
+      .run(version, new Date().toISOString());
+  }
+
+  /** Versions this build carries, for a health check or a deploy gate. */
+  schemaStatus(): { applied: number[]; pending: number[]; current: number } {
+    const applied = [...this.appliedVersions()].sort((a, b) => a - b);
+    return {
+      applied,
+      pending: pendingMigrations(new Set(applied)).map((m) => m.version),
+      current: applied.length ? Math.max(...applied) : 0,
+    };
   }
 
   get<T = Row>(sql: string, ...params: unknown[]): T | undefined {
@@ -49,9 +102,29 @@ export class Db {
     this.raw.prepare(sql).run(...(params as never[]));
   }
 
-  /** Run `fn` in a transaction, rolling back on any throw. */
+  private txDepth = 0;
+
+  /**
+   * Run `fn` in a transaction, rolling back on any throw.
+   *
+   * Re-entrant: a transactional function calling another one is ordinary —
+   * applying a payment event grants credits, and both want atomicity — and
+   * SQLite rejects a nested BEGIN. Only the outermost call opens and closes the
+   * transaction; an inner throw propagates and the outer rollback undoes
+   * everything, which is the semantics every caller here wants.
+   */
   tx<T>(fn: () => T): T {
+    if (this.txDepth > 0) {
+      this.txDepth++;
+      try {
+        return fn();
+      } finally {
+        this.txDepth--;
+      }
+    }
+
     this.raw.exec('BEGIN');
+    this.txDepth = 1;
     try {
       const out = fn();
       this.raw.exec('COMMIT');
@@ -59,6 +132,8 @@ export class Db {
     } catch (e) {
       this.raw.exec('ROLLBACK');
       throw e;
+    } finally {
+      this.txDepth = 0;
     }
   }
 

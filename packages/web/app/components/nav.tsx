@@ -3,6 +3,12 @@ import { ThemeToggle } from './theme-toggle.tsx';
 
 export interface NavTab { href: string; label: string }
 
+const MAIN_LINKS: NavTab[] = [
+  { href: '/dashboard', label: 'Dashboard' },
+  { href: '/billing', label: 'Billing' },
+  { href: '/pricing', label: 'Pricing' },
+];
+
 export function TopBar({ tabs, current, context }: { tabs?: NavTab[]; current?: string; context?: string }) {
   return (
     <header
@@ -62,9 +68,15 @@ export function TopBar({ tabs, current, context }: { tabs?: NavTab[]; current?: 
           </nav>
         ) : (
           <nav aria-label="Main" style={{ display: 'flex', gap: '0.15rem' }}>
-            <Link href="/dashboard" style={{ padding: '0.3rem 0.6rem', borderRadius: 6, fontSize: '0.86rem', textDecoration: 'none', color: 'var(--ink-3)' }}>
-              Dashboard
-            </Link>
+            {MAIN_LINKS.map((l) => (
+              <Link
+                key={l.href}
+                href={l.href}
+                style={{ padding: '0.3rem 0.6rem', borderRadius: 6, fontSize: '0.86rem', textDecoration: 'none', color: 'var(--ink-3)' }}
+              >
+                {l.label}
+              </Link>
+            ))}
           </nav>
         )}
 

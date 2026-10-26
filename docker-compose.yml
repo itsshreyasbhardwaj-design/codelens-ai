@@ -1,0 +1,62 @@
+# Local verification of the production image.
+#
+#   export CODELENS_SECRET_KEY="$(openssl rand -base64 48)"   # 64 chars
+#   docker compose up --build
+#   curl -s localhost:3100/api/health | python3 -m json.tool
+#
+# Requires BuildKit (Docker 23+ / Compose v2), which the Dockerfile's cache
+# mounts depend on.
+#
+# One service and one writer, deliberately. `docker compose up --scale app=2`
+# would point two processes at the same SQLite file through the same volume;
+# SQLite permits one writer, and the second process will fail writes or corrupt
+# state. Scale by machine size, never by replica count.
+
+services:
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: codelens-ai:local
+    # Named rather than generated, so `docker exec codelens-ai sqlite3 ...` and
+    # the backup commands in docs/DEPLOYMENT.md can be copied verbatim.
+    container_name: codelens-ai
+    ports:
+      # The image's port is fixed at 3100 by packages/web/package.json.
+      - "3100:3100"
+    environment:
+      # Required, and deliberately with no default: the application refuses to
+      # issue sessions without a 32+ character key, and a compose file that
+      # supplied a fallback would be shipping a known secret. `:?` fails the
+      # command rather than starting something that cannot sign anyone in.
+      CODELENS_SECRET_KEY: ${CODELENS_SECRET_KEY:?CODELENS_SECRET_KEY must be set to 32 or more characters - see docs/DEPLOYMENT.md}
+      # Optional, and off unless you pass them through. Defaults match
+      # .env.example: deterministic analysis only, no network, no billing.
+      CODELENS_AI_PROVIDER: ${CODELENS_AI_PROVIDER:-none}
+      CODELENS_AI_MODEL: ${CODELENS_AI_MODEL:-}
+      CODELENS_OLLAMA_URL: ${CODELENS_OLLAMA_URL:-http://127.0.0.1:11434}
+      CODELENS_AI_ACCEPT_EXTERNAL_TRANSFER: ${CODELENS_AI_ACCEPT_EXTERNAL_TRANSFER:-}
+      CODELENS_PAYMENT_PROVIDER: ${CODELENS_PAYMENT_PROVIDER:-none}
+      STRIPE_SECRET_KEY: ${STRIPE_SECRET_KEY:-}
+      STRIPE_WEBHOOK_SECRET: ${STRIPE_WEBHOOK_SECRET:-}
+      CODELENS_RETENTION_DAYS: ${CODELENS_RETENTION_DAYS:-30}
+      # Stays off. It is not a sandbox — see ADR-005.
+      CODELENS_DYNAMIC_VERIFY: "off"
+    volumes:
+      # The database and its two WAL sidecars live here. A named volume, not a
+      # bind mount: a bind mount onto macOS or Windows puts SQLite on a
+      # filesystem whose locking it cannot rely on.
+      - codelens-data:/data
+    # No healthcheck block: the image declares its own, and it is correct for
+    # local use as it stands.
+    restart: unless-stopped
+    # A scan is CPU-bound and in-process. Without a ceiling one scan will take
+    # the whole machine. Two cores is the smallest sensible allocation.
+    deploy:
+      resources:
+        limits:
+          cpus: "2"
+          memory: 2g
+
+volumes:
+  codelens-data:

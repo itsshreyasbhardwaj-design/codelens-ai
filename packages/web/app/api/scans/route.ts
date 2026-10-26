@@ -1,4 +1,8 @@
-import { ScanRequestInvalid, startScan, type ScanInput } from '../../lib/runner.ts';
+import { canCreateProject, canStartScan } from '@codelens/engine/billing/entitlements.ts';
+import { grantMonthlyAllowance } from '@codelens/engine/billing/credits.ts';
+import { ScanRequestInvalid, slugify, startScan, type ScanInput } from '../../lib/runner.ts';
+import { sessionOr401 } from '../../lib/session.ts';
+import { db } from '../../lib/store.ts';
 
 /**
  * POST /api/scans — start a scan.
@@ -165,11 +169,45 @@ export async function POST(req: Request): Promise<Response> {
     return fail(e instanceof Error ? e.message : 'request could not be read');
   }
 
+  // Entitlements are decided here, on the server, from the session's
+  // organisation. Nothing the client sends influences which plan applies.
+  const session = await sessionOr401();
+  if (!session) return fail('authentication required', 401);
+  const { organizationId } = session;
+
+  // Idempotent per calendar month, so the allowance lands without a scheduler.
+  grantMonthlyAllowance(db(), organizationId, new Date().toISOString());
+
+  const projectLimit = canCreateProject(db(), organizationId);
+  const scanLimit = canStartScan(db(), organizationId, {
+    atIso: new Date().toISOString(),
+    repoSizeMb: input.kind === 'zip' ? input.buffer.length / (1024 * 1024) : undefined,
+  });
+
+  // A project the organisation already has does not count against the project
+  // limit — only a new one does.
+  const existingProject = db().get<{ id: string }>(
+    'SELECT id FROM projects WHERE organization_id = ? AND slug = ? AND deleted_at IS NULL',
+    organizationId, slugify(input.name ?? ''),
+  );
+  const blocked = !scanLimit.allowed
+    ? scanLimit
+    : (!existingProject && !projectLimit.allowed ? projectLimit : undefined);
+
+  if (blocked) {
+    // 402 rather than 403: this is a billing boundary, not a permission error,
+    // and the client shows the remedy rather than a dead end.
+    return Response.json(
+      { error: blocked.reason, remedy: blocked.remedy, limit: blocked.limit, current: blocked.current },
+      { status: 402, headers: { 'cache-control': 'no-store' } },
+    );
+  }
+
   try {
     // ScanRequestInvalid carries the real reason: a missing directory, an
     // unparseable repository ref, or an archive rejected by the ingest limits
     // (with its rejection code). It is shown to the user verbatim.
-    const job = startScan(input);
+    const job = startScan(input, organizationId);
     return Response.json({ jobId: job.jobId }, { status: 202, headers: { 'cache-control': 'no-store' } });
   } catch (e) {
     if (e instanceof ScanRequestInvalid) return fail(e.message, 400);

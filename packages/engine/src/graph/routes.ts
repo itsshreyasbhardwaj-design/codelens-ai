@@ -26,6 +26,38 @@ const AUTH_CALLS = [
 ];
 
 /**
+ * A project's *own* authentication helper, recognised by shape.
+ *
+ * The list above covers the framework helpers. It cannot cover what a project
+ * calls its own: `sessionOr401`, `requireSession`, `ensureViewer`,
+ * `assert_current_user` are all ordinary choices, and a route using one is
+ * authenticated. Judging only by the fixed list reports those routes as
+ * unauthenticated — a high-severity false positive on correct code, which is
+ * the single most expensive kind this tool can emit.
+ *
+ * The shape required is deliberately narrow: a verb that means "obtain or
+ * demand" next to a noun that means "caller identity". `getSessionId`,
+ * `createSession` (issuing one, not checking one) and `sessionStorage` do not
+ * match, so a route that merely mentions sessions is not credited with checking
+ * one.
+ */
+const PROJECT_AUTH_CALL = new RegExp(
+  '^(?:'
+  + '(?:require|ensure|assert|current|read|load|resolve|verify|check|validate|get)'
+  + '[_]?'
+  + '(?:session|viewer|identity|principal|current[_]?user|auth(?:enticated)?[_]?(?:user|session)?)'
+  + '|'
+  + '(?:session|viewer|identity|principal)[_]?(?:or[_]?401|or[_]?throw|or[_]?fail|required|guard)'
+  + ')$',
+  'i',
+);
+
+/** Whether a called name is an authentication check, by list or by shape. */
+function isAuthCall(name: string): boolean {
+  return AUTH_CALLS.includes(name) || PROJECT_AUTH_CALL.test(name);
+}
+
+/**
  * Authorisation detection is bound to the *actual session variable*.
  *
  * Matching the bare word "user" is not good enough: in
@@ -63,7 +95,14 @@ function authzPatternsFor(identityRoots: string[]): Array<{ re: RegExp; label: s
  */
 function identityRootsIn(body: string): string[] {
   const roots = new Set<string>();
-  const authAlt = AUTH_CALLS.map((c) => c.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|');
+  const authAlt = [
+    ...AUTH_CALLS.map((c) => c.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')),
+    // Keeps the identity-root scan in step with `isAuthCall`, so a project's
+    // own helper also contributes the binding that ownership checks are
+    // matched against.
+    '(?:require|ensure|assert|current|read|load|resolve|verify|check|validate|get)_?(?:session|viewer|identity|principal|current_?user|auth(?:enticated)?_?(?:user|session)?)',
+    '(?:session|viewer|identity|principal)_?(?:or_?401|or_?throw|or_?fail|required|guard)',
+  ].join('|');
 
   // const session = await getSession(req)
   for (const m of body.matchAll(new RegExp(`(?:const|let|var)\\s+(\\w+)\\s*=\\s*(?:await\\s+)?(?:\\w+\\.)*(?:${authAlt})\\s*\\(`, 'g'))) {
@@ -106,7 +145,7 @@ function detectAuth(mod: ParsedModule, sym: SymbolInfo): {
   );
   const authCall = callsInSymbol.find((c) => {
     const leaf = c.callee.split('.').pop() ?? '';
-    return AUTH_CALLS.includes(leaf) || AUTH_CALLS.includes(c.callee);
+    return isAuthCall(leaf) || isAuthCall(c.callee);
   });
 
   // Python decorators can carry the auth requirement.

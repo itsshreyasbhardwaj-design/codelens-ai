@@ -97,6 +97,30 @@ Dashboard, project overview with the health scorecard and coverage panel,
 interactive architecture explorer, findings explorer with full evidence
 inspection, Fix Studio, a repository-aware question surface, and report exports.
 
+## Plans, and what the free one actually gets you
+
+CodeLens runs with **no accounts, no keys and no payment provider**, and that is
+the default. Billing is off until you configure one, and every account stays on
+the free plan.
+
+What matters about the pricing is which layer the money buys. The deterministic
+analysis — the layer the accuracy numbers above come from — is **never metered**.
+It costs nothing to run, so it is not gated on credits: an organisation at zero
+credits still gets a complete scan, every analyzer, every Fix Pack. Credits buy
+only the optional AI semantic layer, and when the balance will not cover it that
+one stage is skipped with the reason attached rather than failing the scan.
+
+Plan limits (projects, scans a month, seats, monthly credits) are read from the
+database and enforced where work starts, so `/api/scans` answers 402 with a
+remedy rather than letting a scan begin and billing for it afterwards. Credits
+use reserve → settle → release: the reservation is a ceiling, settlement charges
+metered usage, and the remainder returns. Every ledger row carries a unique
+idempotency key, so a retried request cannot double-charge.
+
+To take money you need your own Stripe account and a container host with a
+persistent volume. [docs/LAUNCH.md](docs/LAUNCH.md) is the checklist;
+[docs/DEPLOYMENT.md](docs/DEPLOYMENT.md) is the deployment guide.
+
 ## The AI layer is off by default
 
 `CODELENS_AI_PROVIDER=none` is the default, and the product is complete without
@@ -144,6 +168,8 @@ limitation, not a solved problem.
 | [docs/LIMITATIONS.md](docs/LIMITATIONS.md) | What CodeLens cannot tell you, and its known false-positive classes |
 | [docs/SUPPORTED.md](docs/SUPPORTED.md) | Technology matrix and analysis depth per language |
 | [docs/RUNBOOK.md](docs/RUNBOOK.md) | Operating it: deployment, retention, failure recovery |
+| [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md) | Running it in production: container, volume, backups, what will not work |
+| [docs/LAUNCH.md](docs/LAUNCH.md) | Launch checklist: what is done, what needs your own accounts, what is absent |
 | [docs/STATUS.md](docs/STATUS.md) | Honest implementation status: what works, what does not |
 
 ## Licence

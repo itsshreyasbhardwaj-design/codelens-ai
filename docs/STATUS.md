@@ -115,7 +115,33 @@ progress, project overview with scorecard and coverage panel, architecture
 explorer, findings explorer with full evidence inspection, Fix Studio, a
 repository-aware question surface, and report exports.
 
-**143 automated tests**, zero runtime test dependencies: Node's built-in test
+**Plans, limits and the credit ledger.** Five plans seeded into the database
+(free, solo, pro, team, enterprise) with per-plan project, scan, seat and
+monthly-credit limits. Entitlements are enforced where the work starts, not in
+the UI: `/api/scans` returns 402 with a machine-readable remedy when a project
+or scan limit is hit. Credits use reserve → settle → release with an
+`InsufficientCredits` check *before* anything is written, a `CHECK (balance >= 0)`
+constraint behind that, and a unique idempotency key on every ledger row so a
+retried request cannot double-charge. Settlement is clamped to the reserved
+ceiling: an under-estimate is a bug in estimation, not a licence to charge more.
+
+**What is never metered.** Deterministic analysis — the layer the recall numbers
+above come from — costs nothing to run and is never gated on credits. An
+organisation at zero credits still gets a complete scan; only the optional AI
+layer draws on the balance, and a refusal skips that one stage with the reason
+attached rather than failing the scan. Both behaviours are covered by tests in
+`packages/engine/src/pipeline/pipeline.test.ts`.
+
+**Payments.** A `PaymentProvider` interface with a Stripe adapter and a
+`NoPaymentProvider` default. Signature verification is a pure exported function
+tested offline against a known-good HMAC, a replayed timestamp outside the 300s
+tolerance, a tampered body, and multiple `v1` signatures during secret rotation.
+Webhook application is idempotent on `(provider, provider_event_id)`. With no
+provider configured the app says so and leaves every account on the free plan;
+with Stripe selected but no webhook secret it **refuses to run billing at all**,
+because entitlements would otherwise rest on an unverified request.
+
+**199 automated tests**, zero runtime test dependencies: Node's built-in test
 runner and native TypeScript.
 
 ## Not implemented
@@ -153,13 +179,22 @@ Stated plainly rather than stubbed.
 - **Deep analysis beyond TypeScript, JavaScript and Python.** Other languages
   get structural and text-level analysis. Depth per language is published in
   `docs/SUPPORTED.md` and reported per scan.
+- **Billing beyond checkout and webhooks.** No dunning, no invoices, no
+  proration, no tax handling, no customer-portal integration, and no email of
+  any kind — there is a `notifications` table and nothing that sends. Stripe's
+  own hosted pages cover most of this; none of it is wired into this UI. Only
+  the Stripe adapter exists, though the provider interface was written for a
+  second one.
+- **Single-session revocation.** Sessions are stateless signed cookies, so
+  revoking one session means rotating `CODELENS_SECRET_KEY`, which invalidates
+  all of them. Noted in `packages/engine/src/db/auth.ts`.
 - **Horizontal scaling of the web app.** In-flight job state lives in a
   module-level map, correct for one process. The orchestrator already persists
   stages, so a multi-process deployment would read those tables instead.
 
 ## How this was verified, and what was not
 
-Verified by execution: the type checker and the 124-test suite (unit,
+Verified by execution: the type checker and the 199-test suite (unit,
 integration, and a single end-to-end journey test that ingests the fixture,
 diagnoses it, generates and validates Fix Packs, exports every report format,
 applies fixes, re-scans and compares); the accuracy harness; a production build
@@ -194,6 +229,53 @@ The third stands and is not fixed: the authentication routes have no automated
 test. The logic beneath them has 19, and the routes were verified by hand
 against a running server, but there is no test that would catch a regression in
 the route glue itself. It is reported here rather than argued away.
+
+## Third self-audit (after the billing work)
+
+CodeLens was run against its own repository again once plans, credits,
+entitlements and payments were in place. It reported **four things in our own
+code**; all four were acted on, and the split is the useful part.
+
+**One real defect, in the application.** `GET` and `DELETE /api/scans/:jobId`
+authenticated the caller through the middleware and then looked the job up by id
+without checking who owned it. Any signed-in user with another tenant's job id
+could read that scan's project name and progress, and **cancel the scan**.
+Classic broken object-level authorisation — the exact class the tool detects —
+found by the tool, in the tool. Jobs now carry their organisation, a job
+belonging to someone else is reported as absent exactly as a missing one is, and
+the fix was verified live with two accounts: before, a second tenant got 200 on
+the read and 202 on the cancel; after, both are 404.
+
+**Three false positives, each a rule defect worth fixing rather than
+suppressing.**
+
+- `reliability.http.no_timeout` fired on all three outbound calls (Anthropic,
+  OpenAI, Stripe) although every one of them passes
+  `signal: AbortSignal.timeout(...)`. The rule tested the parser's captured
+  argument text, which is truncated at 200 characters, so a `signal` placed
+  after a large `body` was invisible. It now reads the call's own source back
+  from the file, paren-balanced and comment-stripped. *Worth recording that the
+  first attempt at this was wrong: the finding was taken at face value and
+  timeouts were "added" that were already there. Re-reading the code is what
+  found the real defect.*
+- `security.authz.missing_authentication` fired at high severity on four routes
+  that do authenticate, because the auth-helper list held framework names only
+  and this project's helper is called `sessionOr401`. A fixed list can never
+  cover what a project calls its own helper. Project-local helpers are now
+  recognised by shape — a verb meaning "obtain or demand" beside a noun meaning
+  "caller identity" — narrow enough that `createSession` and `sessionStorage`
+  still do not count.
+- `quality.duplication.divergent_logic` fired at high severity on two
+  three-line query wrappers, claiming they had drifted and now computed
+  different answers. They differ only in their SQL string, which is the entire
+  point of each. A differing *number* or *operator* supports the drift claim;
+  a differing opaque *string* does not, and every thin wrapper around a query,
+  route, config key or storage path has that shape. Strings no longer promote a
+  pair to `drift`; such a pair is still reported as the tidiness finding it is.
+
+All three rule changes were made without losing a single ground-truth detection:
+recall stayed at 69/69 and the suite at 204 passing. Our own code now has
+**zero P0 findings**.
 
 ## Self-audit false positives, found and fixed
 

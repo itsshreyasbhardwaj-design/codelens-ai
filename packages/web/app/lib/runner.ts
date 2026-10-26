@@ -10,6 +10,8 @@ import { loadAiConfig } from '@codelens/engine/ai/provider.ts';
 import { parseRepoRef } from '@codelens/engine/ingest/github.ts';
 import { readZip } from '@codelens/engine/ingest/zip.ts';
 import { IngestRejected } from '@codelens/engine/ingest/limits.ts';
+import { reserve, settle } from '@codelens/engine/billing/credits.ts';
+import { canUseAi, creditsForUsage, estimateScanCredits } from '@codelens/engine/billing/entitlements.ts';
 import { db, LOCAL_ORG } from './store.ts';
 
 /**
@@ -28,6 +30,15 @@ import { db, LOCAL_ORG } from './store.ts';
 
 export interface JobProgress {
   jobId: string;
+  /**
+   * The organisation the scan was started by.
+   *
+   * Authentication is not authorisation: the middleware guarantees a caller has
+   * *a* session, not that this job is theirs. Without this field the job routes
+   * are an object-level authorisation hole — a guessed id would expose another
+   * tenant's project name and let them cancel the scan.
+   */
+  organizationId: string;
   projectId: string;
   projectName: string;
   status: 'queued' | 'running' | 'completed' | 'partial' | 'failed' | 'cancelled';
@@ -54,16 +65,27 @@ function prune(): void {
   for (const j of finished.slice(0, jobs.size - MAX_JOBS)) jobs.delete(j.jobId);
 }
 
-export function getJob(jobId: string): JobProgress | undefined {
-  return jobs.get(jobId);
-}
-
-export function listJobs(): JobProgress[] {
-  return [...jobs.values()].sort((a, b) => b.startedAt.localeCompare(a.startedAt));
-}
-
-export function cancelJob(jobId: string): boolean {
+/**
+ * A job, only if it belongs to this organisation.
+ *
+ * A job owned by someone else is reported as absent, exactly as a missing one
+ * is, so existence does not leak across tenants — the same rule the store
+ * applies to projects.
+ */
+export function getJob(jobId: string, organizationId: string): JobProgress | undefined {
   const job = jobs.get(jobId);
+  if (!job || job.organizationId !== organizationId) return undefined;
+  return job;
+}
+
+export function listJobs(organizationId: string): JobProgress[] {
+  return [...jobs.values()]
+    .filter((j) => j.organizationId === organizationId)
+    .sort((a, b) => b.startedAt.localeCompare(a.startedAt));
+}
+
+export function cancelJob(jobId: string, organizationId: string): boolean {
+  const job = getJob(jobId, organizationId);
   if (!job || job.finishedAt) return false;
   cancellations.add(jobId);
   return true;
@@ -134,13 +156,13 @@ function resolveSource(input: ScanInput): { source: SourceSpec; projectName: str
   };
 }
 
-export function startScan(input: ScanInput): JobProgress {
+export function startScan(input: ScanInput, organizationId: string = LOCAL_ORG): JobProgress {
   const { source, projectName } = resolveSource(input);
   const projectId = slugify(projectName);
   const jobId = randomUUID();
 
   const job: JobProgress = {
-    jobId, projectId, projectName,
+    jobId, organizationId, projectId, projectName,
     status: 'queued',
     stages: [],
     startedAt: new Date().toISOString(),
@@ -158,6 +180,25 @@ export function startScan(input: ScanInput): JobProgress {
         source,
         analyzers: ALL_ANALYZERS,
         aiConfig: loadAiConfig(),
+        aiCredits: {
+          estimate: (files) => estimateScanCredits({ files, aiEnabled: true }),
+          reserve: (amount, scanId) => {
+            const check = canUseAi(db(), organizationId, amount);
+            if (!check.allowed) return { ok: false, reason: check.reason ?? 'insufficient credits' };
+            try {
+              // Keyed on the scan id so a retried scan cannot hold twice.
+              const held = reserve(db(), organizationId, amount, {
+                scanId, idempotencyKey: `scan-ai:${scanId}`,
+              });
+              return { ok: true, reservationId: held.id };
+            } catch (e) {
+              return { ok: false, reason: e instanceof Error ? e.message : String(e) };
+            }
+          },
+          settle: (reservationId, tokensIn, tokensOut) => {
+            settle(db(), reservationId, creditsForUsage(tokensIn, tokensOut));
+          },
+        },
         isCancelled: () => cancellations.has(jobId),
         onStageChange: (stage) => {
           const i = job.stages.findIndex((s) => s.name === stage.name);
@@ -178,7 +219,7 @@ export function startScan(input: ScanInput): JobProgress {
       };
 
       if (outcome.status !== 'failed' && outcome.status !== 'cancelled') {
-        saveScan(db(), outcome, { organizationId: LOCAL_ORG, projectId, projectName });
+        saveScan(db(), outcome, { organizationId, projectId, projectName });
       }
     } catch (e) {
       job.status = 'failed';

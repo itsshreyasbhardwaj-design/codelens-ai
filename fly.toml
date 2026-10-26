@@ -1,0 +1,98 @@
+# Fly.io configuration for CodeLens AI.
+#
+# Replace `app` with your own name, then:
+#
+#   fly launch --no-deploy --copy-config
+#   fly volumes create codelens_data --size 10 --region iad   # once, 1 volume
+#   fly secrets set CODELENS_SECRET_KEY="$(openssl rand -base64 48)"
+#   fly deploy
+#   fly scale count 1                                          # see below
+#
+# ---------------------------------------------------------------------------
+# ONE MACHINE. NOT TWO.
+#
+# The database is SQLite on the mounted volume and SQLite has a single writer
+# (ADR-001). A second machine gets its own volume — Fly volumes are per-machine
+# and are not shared — so two machines means two divergent databases behind one
+# hostname, and a user's scan appearing or vanishing depending on which machine
+# answered. That is worse than downtime, because nothing reports an error.
+#
+# `fly deploy` will try to run two machines for a service by default. Keep the
+# count at 1 and verify it after every deploy:
+#
+#   fly scale count 1
+#   fly status          # exactly one machine, one volume attached
+#
+# Growing means a bigger machine ([[vm]] below), not more of them. Horizontal
+# scaling needs the Postgres migration in docs/ARCHITECTURE.md#postgres-migration
+# first.
+# ---------------------------------------------------------------------------
+
+app = "codelens-ai-changeme"
+primary_region = "iad"
+
+[build]
+  dockerfile = "Dockerfile"
+
+[env]
+  # Must sit inside the mount destination below.
+  CODELENS_DB = "/data/codelens.db"
+  CODELENS_HOME = "/data/codelens"
+  NODE_ENV = "production"
+  # Not a sandbox on any host, Fly included. See ADR-005.
+  CODELENS_DYNAMIC_VERIFY = "off"
+  # Deterministic analysis only unless you deliberately change it. An external
+  # provider also needs CODELENS_AI_ACCEPT_EXTERNAL_TRANSFER=true and a key set
+  # with `fly secrets set`, never here.
+  CODELENS_AI_PROVIDER = "none"
+
+# CODELENS_SECRET_KEY, GITHUB_TOKEN, STRIPE_SECRET_KEY and
+# STRIPE_WEBHOOK_SECRET are secrets: `fly secrets set`, never [env].
+
+[http_service]
+  # Fixed by packages/web/package.json, which runs `next start --port 3100`.
+  internal_port = 3100
+  force_https = true
+  # Both off on purpose. A suspended machine cannot finish a scan, and a scan
+  # is minutes of CPU work that has already been paid for; stopping the machine
+  # mid-scan leaves a job row that will never complete. This costs the price of
+  # one always-on machine.
+  auto_stop_machines = "off"
+  auto_start_machines = false
+  min_machines_running = 1
+  processes = ["app"]
+
+  # Readiness. /api/health is exempt from the session guard in
+  # packages/web/middleware.ts, so no credentials are needed. It returns 503
+  # until the database is reachable and every migration has been applied, which
+  # is exactly the window in which this machine must not receive traffic.
+  [[http_service.checks]]
+    grace_period = "45s"
+    interval = "30s"
+    method = "GET"
+    path = "/api/health"
+    protocol = "http"
+    timeout = "5s"
+
+[mounts]
+  source = "codelens_data"
+  destination = "/data"
+  # Fly does not grow a volume automatically, and a full volume makes SQLite
+  # writes fail. Scans and snapshots accumulate; CODELENS_RETENTION_DAYS prunes
+  # them. Raise this and `fly volumes extend` well before it matters.
+  auto_extend_size_threshold = 80
+  auto_extend_size_increment = "5GB"
+  auto_extend_size_limit = "50GB"
+
+[[vm]]
+  # A scan is CPU-bound and in-process. One shared CPU makes scans crawl and
+  # starves the request handler that serves the dashboard while a scan runs.
+  # `size` is the whole specification — 2 performance cores and 4 GB. Do not
+  # also set cpu_kind/cpus/memory here; Fly treats the two forms as conflicting.
+  size = "performance-2x"
+
+[deploy]
+  # Replace the machine rather than running old and new together: two processes
+  # writing one SQLite file, even briefly, is the failure this file exists to
+  # prevent. This trades a few seconds of downtime for correctness.
+  strategy = "immediate"

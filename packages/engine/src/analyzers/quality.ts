@@ -579,16 +579,43 @@ function classifyPair(pair: DupPair): DupVerdict {
   return { kind: behavioural ? 'drift' : 'clone', diffs, diffRatio };
 }
 
-/** Whether a difference changes behaviour rather than only which name is used. */
+/**
+ * Whether a difference changes behaviour rather than only which name is used.
+ *
+ * This decides between two verdicts with very different weight: `drift`, which
+ * claims the two copies now compute different answers for the same input, and
+ * `clone`, which claims only that there are two of them.
+ *
+ * A differing **number** or **operator** inside otherwise identical code
+ * supports the drift claim: `cents * 0.8` against `cents * 0.85` is the same
+ * calculation giving two answers, and whichever copy a caller reaches decides
+ * what it gets.
+ *
+ * A differing **string literal** does not support it, and used to. Two bodies
+ * identical but for an opaque string are usually two deliberately different
+ * operations that share a shape — `'SELECT COUNT(*) ... FROM projects ...'`
+ * against `'SELECT COUNT(*) ... FROM organization_members ...'` is two
+ * different counts, not a drifted copy, and the differing string is the entire
+ * point of each. Every thin wrapper around a query, a route, a config key or a
+ * storage path has that shape, so treating the string as behavioural reported a
+ * high-severity correctness problem against a large class of correct code.
+ *
+ * Such a pair is still reported, as the `clone` tidiness finding it is. Only
+ * the unsupportable claim is withheld.
+ */
 function differenceLooksBehavioural(aText: string, bText: string): boolean {
   // A digit inside an identifier (VALUE_1, sha256) is not a literal: counting
-  // it as one would report a renamed copy as a drifted one.
+  // it as one would report a renamed copy as a drifted one. Digits inside a
+  // string literal are the string's own content, not the code's arithmetic, so
+  // strings are removed before numbers and operators are compared.
+  const withoutStrings = (s: string): string => s.replace(/'[^']*'|"[^"]*"|`[^`]*`/g, "''");
+  const a = withoutStrings(aText);
+  const b = withoutStrings(bText);
+
   const numbers = (s: string): string[] => s.match(/(?<![\w$])\d+(?:\.\d+)?/g) ?? [];
-  if (numbers(aText).join(',') !== numbers(bText).join(',')) return true;
+  if (numbers(a).join(',') !== numbers(b).join(',')) return true;
   const ops = (s: string): string[] => s.match(/===|!==|==|!=|>=|<=|[<>+\-*/%]|&&|\|\||\?\?|!/g) ?? [];
-  if (ops(aText).join(',') !== ops(bText).join(',')) return true;
-  const strings = (s: string): string[] => s.match(/'[^']*'|"[^"]*"|`[^`]*`/g) ?? [];
-  return strings(aText).join(',') !== strings(bText).join(',');
+  return ops(a).join(',') !== ops(b).join(',');
 }
 
 /** A title fragment that stays readable when both copies share a name. */

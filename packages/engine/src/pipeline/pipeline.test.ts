@@ -111,6 +111,70 @@ describe('scan orchestration', () => {
     assert.equal(outcome.coverage.layers.ai, false);
   });
 
+  it('skips the AI layer with the billing reason when credits are refused, and still delivers the scan', async (t) => {
+    const dir = tempProject(MINIMAL_APP);
+    t.after(() => rmSync(dir, { recursive: true, force: true }));
+
+    let settled = false;
+    const outcome = await runScan({
+      projectId: 'p1', projectName: 'Tiny',
+      source: { kind: 'local', path: dir },
+      analyzers: [securityAnalyzer],
+      // A configured provider, so the stage is reachable and the refusal under
+      // test is the credit refusal rather than a missing provider.
+      aiConfig: {
+        provider: 'ollama', model: 'qwen2.5-coder', tokenBudget: 10_000,
+        ollamaUrl: 'http://127.0.0.1:1', externalTransferAcknowledged: false,
+      },
+      aiCredits: {
+        estimate: () => 40,
+        reserve: () => ({ ok: false, reason: 'This would use up to 40 credits and 0 are available.' }),
+        settle: () => { settled = true; },
+      },
+    });
+
+    const stage = outcome.stages.find((s) => s.name === 'ai_semantic_investigation')!;
+    assert.equal(stage.status, 'skipped');
+    assert.match(stage.message!, /40 credits and 0 are available/);
+    assert.equal(outcome.coverage.layers.ai, false, 'a refused layer must not be reported as having run');
+    assert.equal(settled, false, 'nothing may be settled when nothing was reserved');
+
+    // The point of metering only the AI layer: the deterministic scan still ran.
+    assert.equal(outcome.stages.find((s) => s.name === 'deterministic_diagnostics')!.status, 'completed');
+    assert.ok(outcome.map, 'the scan must still produce a repository map');
+    assert.notEqual(outcome.status, 'failed');
+  });
+
+  it('settles the hold against metered usage even when the AI layer fails', async (t) => {
+    const dir = tempProject(MINIMAL_APP);
+    t.after(() => rmSync(dir, { recursive: true, force: true }));
+
+    const calls: Array<{ id: string; tokensIn: number; tokensOut: number }> = [];
+    const outcome = await runScan({
+      projectId: 'p1', projectName: 'Tiny',
+      source: { kind: 'local', path: dir },
+      analyzers: [securityAnalyzer],
+      // Port 1 refuses the connection, so the layer fails after reserving.
+      aiConfig: {
+        provider: 'ollama', model: 'qwen2.5-coder', tokenBudget: 10_000,
+        ollamaUrl: 'http://127.0.0.1:1', externalTransferAcknowledged: false,
+      },
+      aiCredits: {
+        estimate: () => 40,
+        reserve: () => ({ ok: true, reservationId: 'res_1' }),
+        settle: (id, tokensIn, tokensOut) => { calls.push({ id, tokensIn, tokensOut }); },
+      },
+    });
+
+    assert.equal(calls.length, 1, 'a hold must be settled exactly once');
+    assert.equal(calls[0]!.id, 'res_1');
+    // Nothing reached the provider, so nothing is charged and the whole hold
+    // comes back. A dangling hold would silently cost the customer credits.
+    assert.equal(calls[0]!.tokensIn, 0);
+    assert.equal(calls[0]!.tokensOut, 0);
+    assert.notEqual(outcome.status, 'failed', 'a failed AI layer must not fail the scan');
+  });
+
   it('survives an analyzer that throws, and records it as skipped', async (t) => {
     const dir = tempProject(MINIMAL_APP);
     t.after(() => rmSync(dir, { recursive: true, force: true }));
