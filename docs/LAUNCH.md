@@ -55,6 +55,13 @@ and confirm in the credit ledger on `/billing` that the grant landed.
 
 ### 2.2 A host — required to be reachable
 
+**Build the image once before you rely on it.** The Dockerfile has never been
+run — the machine it was written on has no Docker. Its runtime layout was
+verified by assembling the same file set and starting it, but the build itself
+is unproven. `docker compose up --build` on any machine with Docker settles it,
+and a failure will be loud and at build time.
+
+
 See `docs/DEPLOYMENT.md`. The short version: a container host with a
 **persistent volume** and a **single instance**. Storage is SQLite via
 `node:sqlite`, which is a file with one writer, and scans are CPU-bound

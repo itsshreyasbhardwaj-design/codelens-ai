@@ -4,6 +4,36 @@ This describes how to run CodeLens AI as a hosted service, and it is specific
 about where it will not run. Read "What will not work" before choosing a host:
 the constraints are architectural, not a matter of configuration.
 
+## Before you trust this: the image has not been built
+
+**The Dockerfile in this repository has never been run.** It was written on a
+machine with no Docker installed, so there was no daemon and no registry access.
+Everything else here was executed; the image itself was not.
+
+What *was* verified, so you know what the gap actually is:
+
+- The runtime file set, by assembling exactly the Dockerfile's runtime-stage
+  `COPY` list into a clean directory, running `pnpm install --prod
+  --frozen-lockfile`, starting the server, and confirming the landing page, the
+  session guard, boot migrations, the WAL sidecars on the volume path, and
+  `/api/health`.
+- The same with the whole application tree made read-only, which is what running
+  as the non-root `node` user against root-owned `/app` produces.
+- `/api/health` across all three branches: 200 ok, 200 degraded (no secret key),
+  and 503 (database unreachable, and separately, migrations pending).
+- `docker-compose.yml` and `fly.toml` parse as YAML and TOML respectively, and
+  every `COPY` source in the Dockerfile resolves against the repository.
+
+What is therefore unproven: that the base image tag `node:24.16.0-bookworm-slim`
+resolves, that the `apt-get install python3` layer succeeds, and that the build
+completes end to end. The base image is pinned by patch tag and not by digest
+for the same reason — the digest could not be resolved offline. The Dockerfile
+carries the `docker buildx imagetools inspect` command to pin one.
+
+**So: run `docker compose up --build` once on a machine with Docker before you
+deploy anything to a customer.** If it fails, it will fail at build time with a
+clear message, not silently in production.
+
 ## The constraint that decides your host
 
 Two properties of the application, both recorded as decisions in
