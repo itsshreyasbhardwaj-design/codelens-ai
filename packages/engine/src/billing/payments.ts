@@ -328,23 +328,72 @@ function handle(db: Db, provider: ProviderName, event: WebhookEvent): WebhookOut
   const code = metadataCode(event);
 
   switch (event.type) {
-    case 'checkout.session.completed': {
+    case 'checkout.session.completed':
+    case 'checkout.session.async_payment_succeeded':
+    case 'checkout.session.async_payment_failed': {
       if (!organizationId || !code) return { applied: false, action: 'event carried no organisation' };
       const product = DEFAULT_PRODUCTS.find((p) => p.code === code);
-      if (product) {
-        db.run(
-          `INSERT OR IGNORE INTO one_time_purchases
-             (id, organization_id, product_code, amount_cents, currency, credits_granted,
-              provider, provider_payment_id, status, created_at)
-           VALUES (?,?,?,?,?,?,?,?, 'paid', ?)`,
-          randomUUID(), organizationId, product.code, product.priceCents, product.currency,
-          product.credits, provider, event.id, now(),
-        );
-        grant(db, organizationId, product.credits, `purchase: ${product.name}`, `purchase:${event.id}`);
-        return { applied: true, action: `granted ${product.credits} credits`, organizationId };
+      if (!product) {
+        // A subscription checkout; the subscription event carries the rest.
+        return { applied: true, action: 'checkout completed', organizationId };
       }
-      // Otherwise a subscription checkout; the subscription event carries the rest.
-      return { applied: true, action: 'checkout completed', organizationId };
+
+      // Keyed on the SESSION, not the event. One session is reported by several
+      // events with different ids — `completed` and then
+      // `async_payment_succeeded` — so an event-keyed grant hands out the
+      // credits twice for one payment. Falls back to the event id when no
+      // session id is present, which leaves a provider that does not report one
+      // behaving exactly as before.
+      const sessionId = typeof event.data.id === 'string' && event.data.id
+        ? event.data.id
+        : (typeof event.data.payment_intent === 'string' && event.data.payment_intent
+            ? event.data.payment_intent
+            : event.id);
+      const purchaseKey = `purchase:${provider}:${sessionId}`;
+
+      db.run(
+        `INSERT OR IGNORE INTO one_time_purchases
+           (id, organization_id, product_code, amount_cents, currency, credits_granted,
+            provider, provider_payment_id, status, created_at)
+         VALUES (?,?,?,?,?,0,?,?, 'pending', ?)`,
+        randomUUID(), organizationId, product.code, product.priceCents, product.currency,
+        provider, sessionId, now(),
+      );
+
+      if (event.type === 'checkout.session.async_payment_failed') {
+        db.run(
+          `UPDATE one_time_purchases SET status = 'failed'
+            WHERE provider = ? AND provider_payment_id = ? AND status = 'pending'`,
+          provider, sessionId,
+        );
+        return { applied: true, action: 'purchase payment failed', organizationId };
+      }
+
+      // `checkout.session.completed` fires when the SESSION completes, which for
+      // a delayed-notification method (ACH or SEPA debit, Bacs, Boleto, OXXO,
+      // Konbini, bank transfer) is before the money settles: `payment_status` is
+      // `unpaid`, and the funds arrive — or do not — later as
+      // `async_payment_succeeded` or `async_payment_failed`. Granting on
+      // `completed` alone handed out spendable credits for a session nobody had
+      // paid for, and nothing in this codebase could ever take them back.
+      //
+      // Only an explicit `unpaid` waits. An ordinary card session is already
+      // `paid` here and no async event ever follows it, so deferring
+      // unconditionally would never grant for the common case; a fully
+      // discounted session reports `no_payment_required` and is likewise
+      // settled. An absent field means a provider that does not report payment
+      // state at all, and starving a real payment is the worse failure.
+      if (event.data.payment_status === 'unpaid') {
+        return { applied: true, action: 'purchase awaiting payment', organizationId };
+      }
+
+      db.run(
+        `UPDATE one_time_purchases SET status = 'paid', credits_granted = ?
+          WHERE provider = ? AND provider_payment_id = ? AND status <> 'paid'`,
+        product.credits, provider, sessionId,
+      );
+      grant(db, organizationId, product.credits, `purchase: ${product.name}`, purchaseKey);
+      return { applied: true, action: `granted ${product.credits} credits`, organizationId };
     }
 
     case 'customer.subscription.created':
@@ -356,6 +405,27 @@ function handle(db: Db, provider: ProviderName, event: WebhookEvent): WebhookOut
       const status = String(event.data.status ?? 'active');
       const mapped = SUBSCRIPTION_STATUS[status] ?? 'canceled';
       const subId = String(event.data.id ?? event.id);
+
+      // Stripe does not guarantee delivery order, and an update generated
+      // BEFORE a cancellation but delivered after it is a genuinely different
+      // event — so the payment_events replay guard cannot catch it. Such an
+      // event flipped the cancelled row back to active and restored the paid
+      // plan and its monthly allowance indefinitely.
+      //
+      // Read before the upsert, so the current event cannot match itself.
+      const ended = db.get<{ ended_at: string | null }>(
+        'SELECT ended_at FROM subscriptions WHERE provider = ? AND provider_subscription_id = ?',
+        provider, subId,
+      );
+      if (ended?.ended_at) {
+        return { applied: false, action: 'ignored update to an ended subscription', organizationId };
+      }
+
+      // Computed from the RAW Stripe status, never from `mapped`. `paused` and
+      // `unpaid` are flattened onto 'canceled' for storage but both recover on
+      // the same subscription id; treating them as terminal would lock a paying
+      // customer out for good.
+      const terminal = status === 'incomplete_expired' || status === 'canceled';
 
       // Supersede any previous active row before inserting, so the partial
       // unique index on one-active-per-organisation holds.
@@ -378,14 +448,15 @@ function handle(db: Db, provider: ProviderName, event: WebhookEvent): WebhookOut
       db.run(
         `INSERT INTO subscriptions
            (id, organization_id, plan_id, status, provider, provider_subscription_id,
-            current_period_start, current_period_end, cancel_at_period_end, created_at, updated_at)
-         VALUES (?,?,?,?,?,?,?,?,?,?,?)
+            current_period_start, current_period_end, cancel_at_period_end, created_at, updated_at, ended_at)
+         VALUES (?,?,?,?,?,?,?,?,?,?,?,?)
          ON CONFLICT (provider, provider_subscription_id) DO UPDATE SET
-           status = excluded.status, plan_id = excluded.plan_id, updated_at = excluded.updated_at`,
+           status = excluded.status, plan_id = excluded.plan_id, updated_at = excluded.updated_at,
+           ended_at = COALESCE(subscriptions.ended_at, excluded.ended_at)`,
         randomUUID(), organizationId, plan.id, mapped, provider, subId,
         event.data.current_period_start ? String(event.data.current_period_start) : null,
         event.data.current_period_end ? String(event.data.current_period_end) : null,
-        event.data.cancel_at_period_end ? 1 : 0, now(), now(),
+        event.data.cancel_at_period_end ? 1 : 0, now(), now(), terminal ? now() : null,
       );
       // Only a status the customer is entitled under may move `plan_code`.
       // `planForOrganization` falls back to this column when no entitling
@@ -431,8 +502,10 @@ function handle(db: Db, provider: ProviderName, event: WebhookEvent): WebhookOut
       );
       if (!row) return { applied: false, action: 'no matching subscription' };
       db.run(
-        "UPDATE subscriptions SET status = 'canceled', updated_at = ? WHERE provider = ? AND provider_subscription_id = ?",
-        now(), provider, subId,
+        `UPDATE subscriptions SET status = 'canceled', updated_at = ?,
+                ended_at = COALESCE(ended_at, ?)
+          WHERE provider = ? AND provider_subscription_id = ?`,
+        now(), now(), provider, subId,
       );
       // Drop to free. Credits already bought are deliberately left alone: they
       // were paid for separately and reports stay readable.

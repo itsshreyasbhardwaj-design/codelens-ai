@@ -181,7 +181,12 @@ export async function POST(req: Request): Promise<Response> {
   const projectLimit = canCreateProject(db(), organizationId);
   const scanLimit = canStartScan(db(), organizationId, {
     atIso: new Date().toISOString(),
-    repoSizeMb: input.kind === 'zip' ? input.buffer.length / (1024 * 1024) : undefined,
+    // One-sided early refusal only: compressed bytes can never exceed the
+    // uncompressed source, so an upload already over the limit is certainly
+    // over it. The real check is in the orchestrator, against analysed bytes
+    // after normalisation — this one cannot see a 13 MB archive that expands
+    // to 2 GB, and there is nothing it could read here that would.
+    repoSizeMb: input.kind === 'zip' ? input.buffer.length / 1_000_000 : undefined,
   });
 
   // A project the organisation already has does not count against the project

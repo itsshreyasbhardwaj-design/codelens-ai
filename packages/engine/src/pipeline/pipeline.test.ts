@@ -606,3 +606,51 @@ describe('a scan that produces nothing is still closed out', () => {
     assert.notEqual(latest?.status, 'running', 'the card must never show a scan that is not running');
   });
 });
+
+describe('the plan ceiling is applied to analysed source', () => {
+  it('refuses a repository larger than the plan allows', async (t) => {
+    const dir = tempProject(MINIMAL_APP);
+    t.after(() => rmSync(dir, { recursive: true, force: true }));
+
+    const outcome = await runScan({
+      projectId: 'p', projectName: 'Tiny',
+      source: { kind: 'local', path: dir },
+      analyzers: [securityAnalyzer],
+      maxSourceBytes: 10,  // smaller than any real project
+    });
+
+    assert.equal(outcome.status, 'failed');
+    assert.match(outcome.errorMessage!, /analysable source/);
+    assert.match(outcome.errorMessage!, /plan/);
+    // Ingestion and normalisation did their work and say so; the rest is skipped
+    // with the reason, not reported as having run.
+    assert.equal(outcome.stages.find((x) => x.name === 'source_normalization')!.status, 'completed');
+    assert.equal(outcome.stages.find((x) => x.name === 'deterministic_diagnostics')!.status, 'skipped');
+  });
+
+  it('allows a repository inside the plan, counting only what is analysed', async (t) => {
+    const dir = tempProject(MINIMAL_APP);
+    t.after(() => rmSync(dir, { recursive: true, force: true }));
+
+    const outcome = await runScan({
+      projectId: 'p', projectName: 'Tiny',
+      source: { kind: 'local', path: dir },
+      analyzers: [securityAnalyzer],
+      maxSourceBytes: 50_000_000,
+    });
+    assert.notEqual(outcome.status, 'failed');
+    assert.ok(outcome.map);
+  });
+
+  it('treats an absent ceiling as unbounded', async (t) => {
+    const dir = tempProject(MINIMAL_APP);
+    t.after(() => rmSync(dir, { recursive: true, force: true }));
+    // The CLI passes none; it is single-user and has no plan.
+    const outcome = await runScan({
+      projectId: 'p', projectName: 'Tiny',
+      source: { kind: 'local', path: dir },
+      analyzers: [securityAnalyzer],
+    });
+    assert.notEqual(outcome.status, 'failed');
+  });
+});

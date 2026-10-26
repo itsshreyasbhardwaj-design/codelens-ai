@@ -11,6 +11,7 @@ import { parseRepoRef } from '@codelens/engine/ingest/github.ts';
 import { readZip } from '@codelens/engine/ingest/zip.ts';
 import { IngestRejected } from '@codelens/engine/ingest/limits.ts';
 import { reserve, settle } from '@codelens/engine/billing/credits.ts';
+import { planForOrganization } from '@codelens/engine/billing/plans.ts';
 import {
   canUseAi, creditsForUsage, estimateScanCredits, tokensForCredits,
 } from '@codelens/engine/billing/entitlements.ts';
@@ -238,11 +239,16 @@ export function startScan(input: ScanInput, organizationId: string = LOCAL_ORG):
   void (async () => {
     try {
       job.status = 'running';
+      // The plan ceiling, enforced against analysed bytes once ingestion knows
+      // the real figure. Read here rather than in the route because the route
+      // only has the compressed upload size to go on.
+      const plan = planForOrganization(db(), organizationId);
       const outcome: ScanOutcome = await runScan({
         projectId,
         projectName,
         source,
         idempotencyKey,
+        maxSourceBytes: plan.maxRepoMb === null ? null : plan.maxRepoMb * 1_000_000,
         analyzers: ALL_ANALYZERS,
         aiConfig: loadAiConfig(),
         aiCredits: {

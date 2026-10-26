@@ -52,6 +52,19 @@ export interface ScanRequest {
   source: SourceSpec;
   analyzers: Analyzer[];
   limits?: IngestLimits;
+  /**
+   * Plan ceiling on ANALYSED source bytes; null or undefined means unbounded.
+   *
+   * Checked after normalisation, which is the first point the real number is
+   * known: a compressed upload size is not the repository size, and the
+   * pre-exclusion byte count is not the analysed size — a repository that is
+   * mostly `node_modules` normalises to a fraction of what it ingests.
+   *
+   * Deliberately separate from `limits`, which is a safety bound on what may be
+   * ingested at all. A plan limit and a decompression-bomb guard are different
+   * things and must not share a field.
+   */
+  maxSourceBytes?: number | null;
   aiConfig?: AiConfig;
   /** Explicitly authorised dynamic verification. Off unless set. */
   dynamicVerify?: { enabled: boolean; reason?: string };
@@ -238,6 +251,21 @@ export async function runScan(req: ScanRequest): Promise<ScanOutcome> {
     return outcome;
   }
   outcome.snapshot = snapshot;
+
+  // The plan ceiling, applied to what will actually be analysed. Before this,
+  // the limit was checked against the compressed upload for a ZIP and not at
+  // all for a local directory or a GitHub repository.
+  if (req.maxSourceBytes != null && snapshot.totalBytes > req.maxSourceBytes) {
+    const mb = (n: number) => Math.round(n / 1_000_000);
+    outcome.status = 'failed';
+    outcome.errorMessage =
+      `this repository holds ${mb(snapshot.totalBytes)} MB of analysable source, and the plan `
+      + `analyses up to ${mb(req.maxSourceBytes)} MB. Upgrade, or scan a smaller subtree.`;
+    for (const spec of STAGE_SPECS.slice(2)) tracker.skip(spec.name, outcome.errorMessage);
+    outcome.stages = tracker.all();
+    return outcome;
+  }
+
   if (cancelled()) return cancelRemaining();
 
   // --------------------------------------------- 3. technology detection ----

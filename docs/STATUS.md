@@ -141,7 +141,7 @@ provider configured the app says so and leaves every account on the free plan;
 with Stripe selected but no webhook secret it **refuses to run billing at all**,
 because entitlements would otherwise rest on an unverified request.
 
-**226 automated tests**, zero runtime test dependencies: Node's built-in test
+**238 automated tests**, zero runtime test dependencies: Node's built-in test
 runner and native TypeScript.
 
 ## Not implemented
@@ -194,7 +194,7 @@ Stated plainly rather than stubbed.
 
 ## How this was verified, and what was not
 
-Verified by execution: the type checker and the 226-test suite (unit,
+Verified by execution: the type checker and the 238-test suite (unit,
 integration, and a single end-to-end journey test that ingests the fixture,
 diagnoses it, generates and validates Fix Packs, exports every report format,
 applies fixes, re-scans and compares); the accuracy harness; a production build
@@ -374,6 +374,54 @@ Two lessons worth keeping. A fix that introduces a new state must be reviewed
 for every path out of that state, not just the one it was written for. And the
 reviewer that found the first round's bugs found the bugs in the fixes too —
 which is an argument for re-reviewing fixes, not only original code.
+
+## A third review round: webhooks are not an ordered, reliable channel
+
+Three more defects, and together they name a category the first two rounds
+missed. The webhook handler was written as though each event were a reliable,
+ordered instruction — grant on `completed`, cancel on `deleted` — when the
+provider guarantees neither.
+
+- **Credits were granted before the money arrived.** A delayed-notification
+  payment method (ACH, SEPA, Bacs, Boleto, OXXO, Konbini, bank transfer)
+  completes the Checkout Session *before* funds settle, with
+  `payment_status: 'unpaid'`. The handler never read that field, so it recorded
+  the purchase as paid and granted spendable credits; `async_payment_failed`
+  fell through to "ignored event type", so nothing could ever take them back.
+  Only an explicit `unpaid` now waits — an unconditional defer would have
+  starved the ordinary card payment, which is already `paid` at `completed` and
+  is never followed by an async event. Fulfilment is keyed on the session, not
+  the event, so `completed` and `async_payment_succeeded` grant once between
+  them.
+- **A cancelled subscription could be resurrected.** An update generated before
+  a cancellation but delivered after it is a genuinely different event, so the
+  replay guard on `payment_events` cannot see it, and the upsert wrote its
+  status unconditionally — restoring the paid plan and its allowance for good.
+  Migration 003 records `ended_at`, and an update to an ended subscription is
+  refused.
+  **The obvious version of this fix locks out paying customers**, and it was
+  caught only because the fix was tested against the neighbouring cases: the
+  previous round flattened `paused` and `unpaid` onto `canceled`, and Stripe
+  recovers both on the *same* subscription id. Treating a stored `canceled` as
+  terminal would therefore strand them. `ended_at` is set from the raw provider
+  status, never the stored one, and the migration backfills only where the event
+  log proves a delete.
+- **The plan's repository-size limit was never enforced.** `canStartScan` skips
+  the check when `repoSizeMb` is undefined, which it was for every local and
+  GitHub scan on every plan; ZIPs were measured by compressed upload, so a 13 MB
+  archive could carry 2 GB of source. It is now enforced after normalisation
+  against *analysed* bytes — the quantity the pricing page actually promises.
+  Enforcing it earlier, against the pre-exclusion byte count, would have refused
+  repositories that are genuinely inside their limit: a 60 MB archive that is
+  mostly `node_modules` normalises to 2 MB.
+
+Twelve more regression tests, each verified to fail when its fix is reverted,
+and migration 003 applied to a populated database with its backfill checked.
+
+The through-line across all three rounds: every fix that looked obvious was
+wrong in a way only a test of the *adjacent* case revealed. Two of the nine
+earlier fixes introduced regressions, and two of this round's three would have
+if shipped in their first form.
 
 ## Self-audit false positives, found and fixed
 

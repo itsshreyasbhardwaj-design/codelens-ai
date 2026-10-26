@@ -305,3 +305,124 @@ describe('an unseeded plan catalogue', () => {
     assert.throws(() => planForOrganization(db, account.organizationId), /seedPlans/);
   });
 });
+
+describe('a purchase is granted only once the money has arrived', () => {
+  function session(org: string, eventId: string, type: string, paymentStatus?: string) {
+    return {
+      id: eventId, type,
+      data: {
+        id: 'cs_session_1',
+        ...(paymentStatus ? { payment_status: paymentStatus } : {}),
+        metadata: { organization_id: org, code: 'credits_10' },
+      },
+    };
+  }
+
+  it('grants nothing for a session that completed unpaid', (t) => {
+    const { db, org } = setup();
+    t.after(() => db.close());
+    // Delayed-notification methods (ACH, SEPA, Boleto, OXXO…) complete the
+    // session before the funds settle.
+    applyWebhookEvent(db, 'stripe', session(org, 'evt_1', 'checkout.session.completed', 'unpaid'));
+    assert.equal(balance(db, org), 0, 'no credits before the money arrives');
+    const row = db.get<{ status: string; credits_granted: number }>(
+      'SELECT status, credits_granted FROM one_time_purchases WHERE organization_id = ?', org,
+    );
+    assert.equal(row?.status, 'pending');
+    assert.equal(Number(row?.credits_granted), 0);
+  });
+
+  it('grants when the delayed payment later succeeds', (t) => {
+    const { db, org } = setup();
+    t.after(() => db.close());
+    applyWebhookEvent(db, 'stripe', session(org, 'evt_1', 'checkout.session.completed', 'unpaid'));
+    applyWebhookEvent(db, 'stripe', session(org, 'evt_2', 'checkout.session.async_payment_succeeded', 'paid'));
+    assert.equal(balance(db, org), 1000);
+    assert.equal(
+      db.get<{ status: string }>('SELECT status FROM one_time_purchases WHERE organization_id = ?', org)?.status,
+      'paid',
+    );
+  });
+
+  it('records the failure when the delayed payment never arrives', (t) => {
+    const { db, org } = setup();
+    t.after(() => db.close());
+    applyWebhookEvent(db, 'stripe', session(org, 'evt_1', 'checkout.session.completed', 'unpaid'));
+    applyWebhookEvent(db, 'stripe', session(org, 'evt_2', 'checkout.session.async_payment_failed', 'unpaid'));
+    assert.equal(balance(db, org), 0);
+    assert.equal(
+      db.get<{ status: string }>('SELECT status FROM one_time_purchases WHERE organization_id = ?', org)?.status,
+      'failed',
+    );
+  });
+
+  it('still grants immediately for an ordinary card payment', (t) => {
+    const { db, org } = setup();
+    t.after(() => db.close());
+    // The common case, and the one an unconditional defer would starve: a card
+    // session is already paid at `completed` and no async event ever follows.
+    applyWebhookEvent(db, 'stripe', session(org, 'evt_1', 'checkout.session.completed', 'paid'));
+    assert.equal(balance(db, org), 1000);
+  });
+
+  it('grants once when both events arrive for one session', (t) => {
+    const { db, org } = setup();
+    t.after(() => db.close());
+    // Keyed on the session, not the event: two different event ids, one payment.
+    applyWebhookEvent(db, 'stripe', session(org, 'evt_1', 'checkout.session.completed', 'paid'));
+    applyWebhookEvent(db, 'stripe', session(org, 'evt_2', 'checkout.session.async_payment_succeeded', 'paid'));
+    assert.equal(balance(db, org), 1000, 'one session, one grant');
+  });
+});
+
+describe('a cancelled subscription stays cancelled', () => {
+  function sub(org: string, eventId: string, type: string, status: string, subId = 'sub_1') {
+    return { id: eventId, type, data: { id: subId, status, metadata: { organization_id: org, code: 'pro' } } };
+  }
+
+  it('ignores an active update delivered after the cancellation', (t) => {
+    const { db, org } = setup();
+    t.after(() => db.close());
+    applyWebhookEvent(db, 'stripe', sub(org, 'e1', 'customer.subscription.created', 'active'));
+    applyWebhookEvent(db, 'stripe', sub(org, 'e2', 'customer.subscription.deleted', 'canceled'));
+    assert.equal(planForOrganization(db, org).code, 'free');
+
+    // Stripe does not guarantee ordering: this one was generated before the
+    // cancellation and delivered after it.
+    const out = applyWebhookEvent(db, 'stripe', sub(org, 'e3', 'customer.subscription.updated', 'active'));
+    assert.equal(out.applied, false);
+    assert.equal(planForOrganization(db, org).code, 'free', 'a dead subscription must not revive');
+  });
+
+  it('still lets a paused subscription recover', (t) => {
+    const { db, org } = setup();
+    t.after(() => db.close());
+    // `paused` and `unpaid` are stored as 'canceled' but Stripe recovers both
+    // on the SAME subscription id. Treating a stored 'canceled' as terminal
+    // would lock these paying customers out — which is why the terminal test
+    // reads the raw provider status, not the stored one.
+    applyWebhookEvent(db, 'stripe', sub(org, 'e1', 'customer.subscription.created', 'active'));
+    applyWebhookEvent(db, 'stripe', sub(org, 'e2', 'customer.subscription.updated', 'paused'));
+    assert.equal(planForOrganization(db, org).code, 'free');
+    applyWebhookEvent(db, 'stripe', sub(org, 'e3', 'customer.subscription.updated', 'active'));
+    assert.equal(planForOrganization(db, org).code, 'pro', 'a paused subscription must be able to recover');
+  });
+
+  it('still lets an unpaid subscription recover', (t) => {
+    const { db, org } = setup();
+    t.after(() => db.close());
+    applyWebhookEvent(db, 'stripe', sub(org, 'e1', 'customer.subscription.created', 'active'));
+    applyWebhookEvent(db, 'stripe', sub(org, 'e2', 'customer.subscription.updated', 'unpaid'));
+    applyWebhookEvent(db, 'stripe', sub(org, 'e3', 'customer.subscription.updated', 'active'));
+    assert.equal(planForOrganization(db, org).code, 'pro');
+  });
+
+  it('allows a genuine resubscribe under a new subscription id', (t) => {
+    const { db, org } = setup();
+    t.after(() => db.close());
+    applyWebhookEvent(db, 'stripe', sub(org, 'e1', 'customer.subscription.created', 'active', 'sub_1'));
+    applyWebhookEvent(db, 'stripe', sub(org, 'e2', 'customer.subscription.deleted', 'canceled', 'sub_1'));
+    applyWebhookEvent(db, 'stripe', sub(org, 'e3', 'customer.subscription.created', 'active', 'sub_2'));
+    assert.equal(planForOrganization(db, org).code, 'pro', 'coming back must still work');
+  });
+});
