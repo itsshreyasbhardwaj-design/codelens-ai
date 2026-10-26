@@ -88,6 +88,34 @@ export function beginScan(db: Db, scanId: string, opts: SaveOptions): void {
   );
 }
 
+/**
+ * Close out a scan that produced nothing to save.
+ *
+ * `beginScan` opened a lifecycle with exactly one exit — `saveScan` — so a scan
+ * that fails ingestion or is cancelled left its row `running` with a NULL
+ * `finished_at` and no reason, permanently. Every "latest scan" query orders by
+ * `queued_at` with no status predicate, so that dead row became the project's
+ * latest scan until another scan succeeded, and the failure reason lived only
+ * in the web layer's in-memory job and was lost on restart.
+ *
+ * The row is updated, never deleted: `credit_ledger.scan_id` is
+ * `ON DELETE SET NULL`, so deleting it would unlink any credits the scan had
+ * already reserved from the scan that spent them — breaking the audit trail
+ * `beginScan` exists to make possible.
+ *
+ * `finished_at IS NULL` makes this a no-op against a row `saveScan` has already
+ * finalised, so a catch-all caller can never clobber a completed scan.
+ */
+export function failScan(
+  db: Db, scanId: string, status: 'failed' | 'cancelled', errorMessage?: string,
+): void {
+  db.run(
+    `UPDATE scan_jobs SET status = ?, error_message = ?, finished_at = ?
+      WHERE id = ? AND finished_at IS NULL`,
+    status, errorMessage ?? null, now(), scanId,
+  );
+}
+
 export function saveScan(db: Db, outcome: ScanOutcome, opts: SaveOptions): void {
   ensureProject(db, opts);
 

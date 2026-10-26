@@ -141,7 +141,7 @@ provider configured the app says so and leaves every account on the free plan;
 with Stripe selected but no webhook secret it **refuses to run billing at all**,
 because entitlements would otherwise rest on an unverified request.
 
-**213 automated tests**, zero runtime test dependencies: Node's built-in test
+**226 automated tests**, zero runtime test dependencies: Node's built-in test
 runner and native TypeScript.
 
 ## Not implemented
@@ -194,7 +194,7 @@ Stated plainly rather than stubbed.
 
 ## How this was verified, and what was not
 
-Verified by execution: the type checker and the 213-test suite (unit,
+Verified by execution: the type checker and the 226-test suite (unit,
 integration, and a single end-to-end journey test that ingests the fixture,
 diagnoses it, generates and validates Fix Packs, exports every report format,
 applies fixes, re-scans and compares); the accuracy harness; a production build
@@ -326,6 +326,54 @@ Each has a regression test that fails if its fix is reverted — verified by
 reverting them. The honest lesson is that the suite passing said nothing about
 any of this: the pipeline tests stubbed the credit hooks, and no test had ever
 created two organisations and had them scan the same directory.
+
+## A second review round, including two regressions from the first
+
+The fixes above were themselves reviewed, and four more defects came out. Two
+were introduced by the previous round's fix — which is the honest cost of
+`beginScan`: registering a scan row before the pipeline runs created a lifecycle
+with only one exit, and the failure paths fell out of it.
+
+- **An unpaid subscription granted a paid plan.** `plan_code` was written for
+  any subscription event, and `planForOrganization` falls back to that column,
+  so an `incomplete` subscription — a card challenge the customer abandoned —
+  yielded Pro limits and 1,200 credits before any payment cleared. Worse, the
+  status whitelist sent anything it did not recognise to `active`, and Stripe
+  has three it did not list (`incomplete_expired`, `unpaid`, `paused`), each
+  stored as a genuinely active subscription row. Chained together that is a
+  permanent free Pro account for anyone who starts a checkout and walks away.
+  The mapping is now total and fails closed, and only an entitling status may
+  move `plan_code`.
+- **The AI stage could outspend what was reserved.** `estimateScanCredits`
+  derived its ceiling from file count while `selectTargets` derives the work
+  from routes and features: a ten-file service with eight unvalidated handlers
+  was estimated at two investigations and ran eight. Because `settle` clamps the
+  charge to the reservation, the excess was absorbed silently rather than
+  billed — measured at 4.2x on one fixture. The estimate now takes the real
+  target count and the model's token budget is capped to what the reservation
+  funds, so the ceiling, the budget and the work are one number.
+- **An interrupted scan held its credits forever** *(regression)*.
+  `releaseStaleReservations` excludes scans marked `running`, and `beginScan`
+  writes exactly that — so a process that died between reserving and settling
+  left a hold nothing could see. There was also no production caller of the
+  recovery function at all, only tests. `recoverOrphanedScans` now runs at boot,
+  which is sound precisely because this deployment is single-writer by rule: at
+  startup, `running` means orphaned.
+- **A failed or cancelled scan was never closed out** *(regression)*. `saveScan`
+  is skipped for those outcomes, so the row `beginScan` created stayed `running`
+  with no reason — and every "latest scan" query orders by `queued_at` with no
+  status filter, so it became the project's latest scan until something else
+  succeeded. The failure reason lived only in memory and was lost on restart.
+  `failScan` now closes the row on both exits.
+
+Twelve more regression tests, each confirmed to fail when its fix is reverted,
+and the boot recovery verified against a real restart: 60 held credits returned,
+the scan marked failed, and a ledger line saying why.
+
+Two lessons worth keeping. A fix that introduces a new state must be reviewed
+for every path out of that state, not just the one it was written for. And the
+reviewer that found the first round's bugs found the bugs in the fixes too —
+which is an argument for re-reviewing fixes, not only original code.
 
 ## Self-audit false positives, found and fixed
 

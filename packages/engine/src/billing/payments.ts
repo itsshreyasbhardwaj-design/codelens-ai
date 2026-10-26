@@ -234,6 +234,39 @@ export function loadPaymentProvider(env: Record<string, string | undefined> = pr
   return new NoPaymentProvider();
 }
 
+/**
+ * Provider subscription status -> the status we store.
+ *
+ * Total, and it fails closed. The previous whitelist sent anything it did not
+ * recognise to `'active'`, and Stripe has three statuses it did not list —
+ * `incomplete_expired`, `unpaid` and `paused` — all of which mean "this will
+ * not be paid for". Each was therefore stored as a genuinely active
+ * subscription that `planForOrganization` reads directly, which is a paid plan
+ * granted for free and unreachable by any fix to `plan_code`.
+ *
+ * The `subscriptions.status` CHECK permits only the five values on the left, so
+ * the three dead ones map onto `canceled` rather than being stored verbatim.
+ */
+const SUBSCRIPTION_STATUS: Record<string, string> = {
+  active: 'active',
+  trialing: 'trialing',
+  past_due: 'past_due',
+  canceled: 'canceled',
+  incomplete: 'incomplete',
+  incomplete_expired: 'canceled',
+  unpaid: 'canceled',
+  paused: 'canceled',
+};
+
+/**
+ * The statuses a customer is entitled under.
+ *
+ * `past_due` is deliberately included: access is reduced through the payment
+ * flow, not by silently dropping a paying customer mid-period. See
+ * `planForOrganization`.
+ */
+const ENTITLING_STATUSES = ['active', 'trialing', 'past_due'];
+
 // --------------------------------------------------------- event handling --
 
 export interface WebhookOutcome {
@@ -321,16 +354,27 @@ function handle(db: Db, provider: ProviderName, event: WebhookEvent): WebhookOut
       if (!plan) return { applied: false, action: `unknown plan '${code}'` };
 
       const status = String(event.data.status ?? 'active');
-      const mapped = ['active', 'trialing', 'past_due', 'canceled', 'incomplete'].includes(status)
-        ? status : 'active';
+      const mapped = SUBSCRIPTION_STATUS[status] ?? 'canceled';
       const subId = String(event.data.id ?? event.id);
 
       // Supersede any previous active row before inserting, so the partial
       // unique index on one-active-per-organisation holds.
-      db.run(
-        "UPDATE subscriptions SET status = 'canceled', updated_at = ? WHERE organization_id = ? AND status IN ('active','trialing','past_due')",
-        now(), organizationId,
-      );
+      //
+      // Only an ENTITLING status may supersede, and never the incoming
+      // subscription itself. An abandoned second checkout arrives as
+      // `incomplete` carrying its own subscription id; superseding on that
+      // cancelled the row of a subscription the customer is actually paying
+      // for. That was previously masked by the unconditional `plan_code` write
+      // below — remove one without the other and a paying customer is
+      // downgraded to free.
+      if (ENTITLING_STATUSES.includes(mapped)) {
+        db.run(
+          `UPDATE subscriptions SET status = 'canceled', updated_at = ?
+            WHERE organization_id = ? AND status IN ('active','trialing','past_due')
+              AND NOT (provider = ? AND provider_subscription_id = ?)`,
+          now(), organizationId, provider, subId,
+        );
+      }
       db.run(
         `INSERT INTO subscriptions
            (id, organization_id, plan_id, status, provider, provider_subscription_id,
@@ -343,7 +387,22 @@ function handle(db: Db, provider: ProviderName, event: WebhookEvent): WebhookOut
         event.data.current_period_end ? String(event.data.current_period_end) : null,
         event.data.cancel_at_period_end ? 1 : 0, now(), now(),
       );
-      db.run('UPDATE organizations SET plan_code = ? WHERE id = ?', plan.code, organizationId);
+      // Only a status the customer is entitled under may move `plan_code`.
+      // `planForOrganization` falls back to this column when no entitling
+      // subscription row exists, so writing the paid plan for an `incomplete`
+      // subscription handed out the plan, its limits and its monthly credit
+      // allowance before any payment had succeeded — a free Pro account for
+      // anyone who abandoned the card challenge.
+      if (ENTITLING_STATUSES.includes(mapped)) {
+        db.run('UPDATE organizations SET plan_code = ? WHERE id = ?', plan.code, organizationId);
+      } else if (!db.get(
+        `SELECT id FROM subscriptions
+          WHERE organization_id = ? AND status IN ('active','trialing','past_due')`,
+        organizationId,
+      )) {
+        // Nothing entitling left anywhere: drop to free, as the deleted branch does.
+        db.run("UPDATE organizations SET plan_code = 'free' WHERE id = ?", organizationId);
+      }
 
       if (mapped === 'active' || mapped === 'trialing') {
         // Keyed on (organisation, plan, month) by `grantMonthlyAllowance`, not

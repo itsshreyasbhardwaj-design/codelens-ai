@@ -4,15 +4,15 @@ import { Db } from '../db/index.ts';
 import { register } from '../db/auth.ts';
 import {
   balance, grant, grantMonthlyAllowance, held, InsufficientCredits, ledger,
-  release, releaseStaleReservations, reserve, ReservationNotFound, settle,
+  recoverOrphanedScans, release, releaseStaleReservations, reserve, ReservationNotFound, settle,
 } from './credits.ts';
 import {
   canAddSeat, canCreateProject, canStartScan, canUseAi, creditsForUsage,
-  estimateScanCredits, usageSummary,
+  estimateScanCredits, tokensForCredits, usageSummary,
 } from './entitlements.ts';
 import { DEFAULT_PLANS, listPlans, planByCode, planForOrganization, seedPlans } from './plans.ts';
 import { applyWebhookEvent } from './payments.ts';
-import { beginScan } from '../pipeline/persist.ts';
+import { beginScan, failScan } from '../pipeline/persist.ts';
 
 const KEY = 'billing-test-secret-key-at-least-32-chars';
 
@@ -308,12 +308,32 @@ describe('AI spending', () => {
     assert.equal(estimateScanCredits({ files: 5000, aiEnabled: false }), 0);
   });
 
-  it('estimates a bounded ceiling that grows with the project', () => {
-    const small = estimateScanCredits({ files: 20, aiEnabled: true });
-    const large = estimateScanCredits({ files: 5000, aiEnabled: true });
-    assert.ok(small > 0);
-    assert.ok(large > small);
-    assert.ok(large <= 8 * 7500 / 1000 * 2, 'the ceiling is capped, not proportional forever');
+  it('estimates from the work to be done, not from the file count', () => {
+    // The estimate follows how many investigations the AI stage will actually
+    // run. It used to scale with file count, which under-counted a small,
+    // route-dense repository by 4x — and because settle() clamps the charge to
+    // the reservation, that overspend was absorbed in silence rather than
+    // billed. A ten-file service with eight unvalidated handlers really does
+    // cost eight investigations.
+    const twoTargets = estimateScanCredits({ files: 10, targets: 2, aiEnabled: true });
+    const eightTargets = estimateScanCredits({ files: 10, targets: 8, aiEnabled: true });
+    assert.ok(twoTargets > 0);
+    assert.ok(eightTargets > twoTargets, 'more investigations must cost more');
+    assert.equal(eightTargets, Math.ceil(8 * 9900 / 1000 * 2));
+
+    // Unknown target count assumes the maximum rather than guessing low:
+    // guessing low is cost the clamp hides.
+    assert.equal(estimateScanCredits({ files: 10, aiEnabled: true }), eightTargets);
+    // Still capped, however large the repository.
+    assert.equal(estimateScanCredits({ files: 5000, targets: 50, aiEnabled: true }), eightTargets);
+  });
+
+  it('funds exactly the tokens it charges for', () => {
+    // The reserved ceiling and the token budget the stage is given must be the
+    // same number, or the stage can spend past what anyone is charged.
+    const credits = estimateScanCredits({ files: 10, targets: 8, aiEnabled: true });
+    const tokens = tokensForCredits(credits);
+    assert.equal(creditsForUsage(tokens, 0), credits);
   });
 
   it('explains that analysis still runs when credits run out', (t) => {
@@ -451,5 +471,113 @@ describe('the monthly allowance is granted once per plan per month', () => {
     });
     assert.equal(out.applied, true);
     assert.equal(planForOrganization(db, org).code, 'enterprise');
+  });
+});
+
+describe('an unpaid subscription grants nothing', () => {
+  function subEvent(org: string, id: string, status: string, code = 'pro') {
+    return {
+      id, type: 'customer.subscription.updated',
+      data: { id: `sub_${status}`, status, metadata: { organization_id: org, code } },
+    };
+  }
+
+  // Every status Stripe can actually send. The three at the end used to fall
+  // through a whitelist to 'active', which stored a genuinely active
+  // subscription row that planForOrganization reads directly — a paid plan,
+  // granted free, unreachable by any fix to plan_code.
+  for (const status of ['incomplete', 'incomplete_expired', 'unpaid', 'paused']) {
+    it(`leaves the organisation on free for status '${status}'`, (t) => {
+      const { db, org } = setup();
+      t.after(() => db.close());
+
+      applyWebhookEvent(db, 'stripe', subEvent(org, `evt_${status}`, status));
+
+      assert.equal(planForOrganization(db, org).code, 'free', `${status} must not entitle`);
+      // The entitlement path /api/scans runs on every request.
+      grantMonthlyAllowance(db, org, new Date().toISOString());
+      assert.equal(balance(db, org), planByCode(db, 'free')!.monthlyCredits,
+        `${status} must not yield the paid allowance`);
+    });
+  }
+
+  it('still entitles an active subscription', (t) => {
+    const { db, org } = setup();
+    t.after(() => db.close());
+    applyWebhookEvent(db, 'stripe', subEvent(org, 'evt_ok', 'active'));
+    assert.equal(planForOrganization(db, org).code, 'pro');
+    assert.equal(balance(db, org), planByCode(db, 'pro')!.monthlyCredits);
+  });
+
+  it('keeps a past_due customer on their plan', (t) => {
+    const { db, org } = setup();
+    t.after(() => db.close());
+    applyWebhookEvent(db, 'stripe', subEvent(org, 'evt_ok', 'active'));
+    applyWebhookEvent(db, 'stripe', subEvent(org, 'evt_pd', 'past_due'));
+    // Deliberate: access is reduced through the payment flow, not by silently
+    // dropping a paying customer mid-period.
+    assert.equal(planForOrganization(db, org).code, 'pro');
+  });
+
+  it('does not downgrade a paying customer when a second checkout is abandoned', (t) => {
+    const { db, org } = setup();
+    t.after(() => db.close());
+    applyWebhookEvent(db, 'stripe', subEvent(org, 'evt_paid', 'active'));
+    assert.equal(planForOrganization(db, org).code, 'pro');
+
+    // An abandoned upgrade attempt arrives as `incomplete` with its OWN
+    // subscription id. Gating plan_code without also gating the supersede
+    // UPDATE cancels the subscription they are actually paying for.
+    applyWebhookEvent(db, 'stripe', subEvent(org, 'evt_abandoned', 'incomplete', 'team'));
+
+    assert.equal(planForOrganization(db, org).code, 'pro', 'the paid subscription must survive');
+    const live = db.get<{ n: number }>(
+      "SELECT COUNT(*) AS n FROM subscriptions WHERE organization_id = ? AND status = 'active'", org,
+    );
+    assert.equal(Number(live?.n), 1);
+  });
+});
+
+describe('a restart returns the credits it interrupted', () => {
+  it('releases a hold whose scan is still marked running, and fails that scan', (t) => {
+    const { db, org } = setup();
+    t.after(() => db.close());
+    grant(db, org, 100, 'test credits', 'k1');
+    beginScan(db, 'scan_crashed', {
+      organizationId: org, projectId: `${org}:p`, projectName: 'p', slug: 'p',
+    });
+    reserve(db, org, 30, { scanId: 'scan_crashed', idempotencyKey: 'r1' });
+    assert.equal(balance(db, org), 70);
+
+    // releaseStaleReservations cannot see this: its predicate excludes
+    // 'running', and nothing heartbeats that status.
+    assert.equal(releaseStaleReservations(db, new Date(Date.now() + 86_400_000).toISOString()), 0);
+
+    const out = recoverOrphanedScans(db);
+    assert.equal(out.reservations, 1);
+    assert.equal(out.scans, 1);
+    assert.equal(balance(db, org), 100, 'the hold must come back');
+    assert.equal(
+      db.get<{ status: string }>('SELECT status FROM scan_jobs WHERE id = ?', 'scan_crashed')?.status,
+      'failed',
+    );
+    // And the ledger says why, rather than the credits just being short.
+    assert.match(ledger(db, org, 5)[0]!.reason, /interrupted by a restart/);
+  });
+
+  it('leaves a live settled scan alone', (t) => {
+    const { db, org } = setup();
+    t.after(() => db.close());
+    grant(db, org, 100, 'test credits', 'k1');
+    beginScan(db, 'scan_done', {
+      organizationId: org, projectId: `${org}:p`, projectName: 'p', slug: 'p',
+    });
+    const r = reserve(db, org, 30, { scanId: 'scan_done', idempotencyKey: 'r1' });
+    settle(db, r.id, 10);
+    failScan(db, 'scan_done', 'failed');  // marks it terminal
+
+    const out = recoverOrphanedScans(db);
+    assert.equal(out.reservations, 0, 'a settled reservation must not be touched');
+    assert.equal(balance(db, org), 90, '10 charged, 20 returned, nothing else');
   });
 });

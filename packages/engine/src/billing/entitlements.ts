@@ -146,12 +146,30 @@ export function canUseAi(db: Db, organizationId: string, estimatedCredits: numbe
  */
 export const CREDITS_PER_1K_TOKENS = 2;
 
-export function estimateScanCredits(opts: { files: number; aiEnabled: boolean }): number {
+export function estimateScanCredits(
+  opts: { files: number; targets?: number; aiEnabled: boolean },
+): number {
   if (!opts.aiEnabled) return 0;
-  // Budget roughly 6k tokens per investigation target, capped at eight targets.
-  const targets = Math.min(8, Math.max(2, Math.ceil(opts.files / 25)));
-  const tokens = targets * 7500;
+  // `selectTargets` picks targets from routes and features, NOT from file
+  // count: a ten-file service with eight unvalidated POST handlers yields the
+  // full eight. Estimating from files alone under-counted by 4x on exactly
+  // those repositories, and because `settle` clamps the charge to the
+  // reservation, the overspend was absorbed silently instead of billed.
+  //
+  // `targets` is the real count where the caller knows it. The fallback assumes
+  // the maximum rather than guessing low, because guessing low is cost the
+  // clamp hides.
+  const targets = Math.min(8, Math.max(1, opts.targets ?? 8));
+  // 6,000 tokens of context, line-numbered (~+21%), plus prompt scaffolding and
+  // the 2,000-token output ceiling. Measured at ~7,800 with empty replies and
+  // ~9,850 with a full one.
+  const tokens = targets * 9900;
   return Math.ceil((tokens / 1000) * CREDITS_PER_1K_TOKENS);
+}
+
+/** Tokens that `credits` actually funds, at this module's pricing. */
+export function tokensForCredits(credits: number): number {
+  return (credits / CREDITS_PER_1K_TOKENS) * 1000;
 }
 
 /** Convert metered token usage into credits actually charged. */

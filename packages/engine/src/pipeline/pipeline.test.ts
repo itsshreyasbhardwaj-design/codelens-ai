@@ -6,7 +6,7 @@ import { join } from 'node:path';
 import { Db, NotFoundError } from '../db/index.ts';
 import { CredentialStorageUnavailable, encryptToken, decryptToken, redactSecrets } from '../db/crypto.ts';
 import { runScan } from './orchestrator.ts';
-import { beginScan, ensureProject, saveScan, loadScanSide, listScans } from './persist.ts';
+import { beginScan, ensureProject, failScan, saveScan, loadScanSide, listScans } from './persist.ts';
 import { securityAnalyzer } from '../analyzers/security.ts';
 import type { Analyzer } from '../analyzers/types.ts';
 
@@ -161,7 +161,7 @@ describe('scan orchestration', () => {
       },
       aiCredits: {
         estimate: () => 40,
-        reserve: () => ({ ok: true, reservationId: 'res_1' }),
+        reserve: () => ({ ok: true, reservationId: 'res_1', tokenCeiling: 20_000 }),
         settle: (id, tokensIn, tokensOut) => { calls.push({ id, tokensIn, tokensOut }); },
       },
     });
@@ -535,5 +535,74 @@ describe('project identity is scoped to the organisation', () => {
     const rows = db.all('SELECT id, status FROM scan_jobs WHERE id = ?', scanId);
     assert.equal(rows.length, 1, 'one row, updated in place');
     assert.notEqual((rows[0] as { status: string }).status, 'running', 'the final status must be recorded');
+  });
+});
+
+describe('a scan that produces nothing is still closed out', () => {
+  function orgProject(db: Db) {
+    db.run(
+      'INSERT INTO organizations (id, name, slug, created_at, updated_at) VALUES (?,?,?,?,?)',
+      'org_x', 'org_x', 'org-x', new Date().toISOString(), new Date().toISOString(),
+    );
+    return { organizationId: 'org_x', projectId: 'org_x:p', projectName: 'p', slug: 'p' };
+  }
+
+  it('does not leave a failed scan running forever', (t) => {
+    const db = new Db(':memory:');
+    db.migrate();
+    t.after(() => db.close());
+    const opts = orgProject(db);
+
+    // beginScan registers the row so the credit ledger has a referent. A scan
+    // that fails ingestion never reaches saveScan, so without failScan the row
+    // stays `running` with no reason, permanently.
+    beginScan(db, 'scan_failed', opts);
+    failScan(db, 'scan_failed', 'failed', 'no such directory');
+
+    const row = db.get<{ status: string; error_message: string; finished_at: string }>(
+      'SELECT status, error_message, finished_at FROM scan_jobs WHERE id = ?', 'scan_failed',
+    );
+    assert.equal(row?.status, 'failed');
+    assert.equal(row?.error_message, 'no such directory', 'the reason must be persisted, not just in memory');
+    assert.ok(row?.finished_at, 'finished_at must be set');
+  });
+
+  it('never clobbers a scan that already completed', (t) => {
+    const db = new Db(':memory:');
+    db.migrate();
+    t.after(() => db.close());
+    const opts = orgProject(db);
+
+    beginScan(db, 'scan_ok', opts);
+    db.run("UPDATE scan_jobs SET status = 'completed', finished_at = ? WHERE id = ?",
+      new Date().toISOString(), 'scan_ok');
+
+    // The runner's catch-all calls this; it must be a no-op here.
+    failScan(db, 'scan_ok', 'failed', 'a late error');
+
+    const row = db.get<{ status: string; error_message: string | null }>(
+      'SELECT status, error_message FROM scan_jobs WHERE id = ?', 'scan_ok',
+    );
+    assert.equal(row?.status, 'completed');
+    assert.equal(row?.error_message, null);
+  });
+
+  it('keeps a dead scan out of the project\'s latest-scan slot', (t) => {
+    const db = new Db(':memory:');
+    db.migrate();
+    t.after(() => db.close());
+    const opts = orgProject(db);
+
+    // The dashboard picks the latest scan by queued_at with no status
+    // predicate, so an unfinalised row became the project's latest scan.
+    beginScan(db, 'scan_dead', opts);
+    failScan(db, 'scan_dead', 'failed', 'ingestion failed');
+
+    const latest = db.get<{ id: string; status: string }>(
+      `SELECT id, status FROM scan_jobs WHERE project_id = ? ORDER BY queued_at DESC LIMIT 1`,
+      opts.projectId,
+    );
+    assert.equal(latest?.id, 'scan_dead');
+    assert.notEqual(latest?.status, 'running', 'the card must never show a scan that is not running');
   });
 });

@@ -4,14 +4,16 @@ import { existsSync, statSync } from 'node:fs';
 import { resolve } from 'node:path';
 import type { StageResult } from '@codelens/core';
 import { runScan, type ScanOutcome, type SourceSpec } from '@codelens/engine/pipeline/orchestrator.ts';
-import { beginScan, saveScan } from '@codelens/engine/pipeline/persist.ts';
+import { beginScan, failScan, saveScan } from '@codelens/engine/pipeline/persist.ts';
 import { ALL_ANALYZERS } from '@codelens/engine/analyzers/all.ts';
 import { loadAiConfig } from '@codelens/engine/ai/provider.ts';
 import { parseRepoRef } from '@codelens/engine/ingest/github.ts';
 import { readZip } from '@codelens/engine/ingest/zip.ts';
 import { IngestRejected } from '@codelens/engine/ingest/limits.ts';
 import { reserve, settle } from '@codelens/engine/billing/credits.ts';
-import { canUseAi, creditsForUsage, estimateScanCredits } from '@codelens/engine/billing/entitlements.ts';
+import {
+  canUseAi, creditsForUsage, estimateScanCredits, tokensForCredits,
+} from '@codelens/engine/billing/entitlements.ts';
 import { db, LOCAL_ORG } from './store.ts';
 
 /**
@@ -244,7 +246,7 @@ export function startScan(input: ScanInput, organizationId: string = LOCAL_ORG):
         analyzers: ALL_ANALYZERS,
         aiConfig: loadAiConfig(),
         aiCredits: {
-          estimate: (files) => estimateScanCredits({ files, aiEnabled: true }),
+          estimate: ({ files, targets }) => estimateScanCredits({ files, targets, aiEnabled: true }),
           reserve: (amount, scanId) => {
             const check = canUseAi(db(), organizationId, amount);
             if (!check.allowed) return { ok: false, reason: check.reason ?? 'insufficient credits' };
@@ -253,7 +255,8 @@ export function startScan(input: ScanInput, organizationId: string = LOCAL_ORG):
               const held = reserve(db(), organizationId, amount, {
                 scanId, idempotencyKey: `scan-ai:${scanId}`,
               });
-              return { ok: true, reservationId: held.id };
+              // What these credits buy, so the stage cannot outspend them.
+              return { ok: true, reservationId: held.id, tokenCeiling: tokensForCredits(amount) };
             } catch (e) {
               return { ok: false, reason: e instanceof Error ? e.message : String(e) };
             }
@@ -283,10 +286,26 @@ export function startScan(input: ScanInput, organizationId: string = LOCAL_ORG):
 
       if (outcome.status !== 'failed' && outcome.status !== 'cancelled') {
         saveScan(db(), outcome, { organizationId, projectId, projectName, slug });
+      } else {
+        // `beginScan` registered this row before the pipeline ran, so a failed
+        // or cancelled scan has to be closed out explicitly — `saveScan` has
+        // nothing to save and is not called. Left alone the row stays `running`
+        // with no reason, and becomes the project's latest scan on the
+        // dashboard until something else succeeds.
+        failScan(db(), scanId, outcome.status === 'cancelled' ? 'cancelled' : 'failed',
+          outcome.errorMessage);
       }
     } catch (e) {
       job.status = 'failed';
       job.error = e instanceof Error ? e.message : String(e);
+      // Same reasoning, for a throw rather than a reported failure. `failScan`
+      // is a no-op once `saveScan` has finalised the row, so this cannot
+      // clobber a scan that actually completed.
+      try {
+        failScan(db(), scanId, 'failed', job.error);
+      } catch {
+        // The database is the thing that failed; the in-memory job still shows why.
+      }
     } finally {
       job.finishedAt = new Date().toISOString();
       cancellations.delete(jobId);

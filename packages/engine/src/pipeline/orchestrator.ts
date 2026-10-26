@@ -21,6 +21,7 @@ import type { Analyzer } from '../analyzers/types.ts';
 import { detectInjectionAttempts } from '../ai/safety.ts';
 import { ModelClient, loadAiConfig, type AiConfig } from '../ai/provider.ts';
 import { investigate, type InvestigationReport } from '../ai/investigate.ts';
+import { selectTargets } from '../ai/retrieval.ts';
 import { buildFixPacks, type FixPack } from '../fixpacks/grouping.ts';
 import { generateFixPackPrompt, type AgentFormat, type PromptContext } from '../fixpacks/prompt.ts';
 import { validateFixPack, type ValidationResult } from '../fixpacks/validate.ts';
@@ -71,11 +72,24 @@ export interface ScanRequest {
 }
 
 export interface AiCreditHooks {
-  /** Ceiling to hold, in credits, for a scan of this size. */
-  estimate(files: number): number;
-  /** Hold the ceiling, or refuse with a reason the user can act on. */
+  /**
+   * Ceiling to hold, in credits, for this scan.
+   *
+   * `targets` is how many investigations the AI stage will actually run, which
+   * is known from the repository map before the stage starts. Estimating from
+   * file count alone under-counted small, route-dense repositories by 4x.
+   */
+  estimate(input: { files: number; targets: number }): number;
+  /**
+   * Hold the ceiling, or refuse with a reason the user can act on.
+   *
+   * `tokenCeiling` is what the held credits actually fund at the caller's
+   * pricing. The stage is capped to it: `settle` clamps the CHARGE to the
+   * reservation, so a stage free to spend beyond it spends money nobody is
+   * ever billed for.
+   */
   reserve(amount: number, scanId: string):
-    | { ok: true; reservationId: string }
+    | { ok: true; reservationId: string; tokenCeiling: number }
     | { ok: false; reason: string };
   /**
    * Charge metered usage and return the unused remainder.
@@ -313,28 +327,42 @@ export async function runScan(req: ScanRequest): Promise<ScanOutcome> {
   if (cancelled()) return cancelRemaining();
 
   // ----------------------------------------- 8. AI semantic investigation ---
-  const client = new ModelClient(aiConfig);
-  const aiUnavailable = client.unavailableReason();
+  // Availability is a property of the configuration alone, so it is settled
+  // before the client the stage will use exists — that client's budget depends
+  // on what the reservation funds.
+  const aiUnavailable = new ModelClient(aiConfig).unavailableReason();
 
   // Credits are held before the layer runs and settled against metered usage
   // after it. A refusal skips this one stage with the reason: the other eleven
   // have already done their work and the scan is still worth delivering.
   let reservationId: string | undefined;
   let creditRefusal: string | undefined;
+  let tokenCeiling = aiConfig.tokenBudget;
+  // How many investigations the stage will really run. Taken from the same
+  // function the stage uses, so the estimate, the reservation and the work are
+  // one number.
+  const plannedTargets = selectTargets(map, 8).length;
   if (!aiUnavailable && req.aiCredits) {
-    const ceiling = req.aiCredits.estimate(snapshot.files.length);
+    const ceiling = req.aiCredits.estimate({ files: snapshot.files.length, targets: plannedTargets });
     if (ceiling > 0) {
       const held = req.aiCredits.reserve(ceiling, scanId);
-      if (held.ok) reservationId = held.reservationId;
-      else creditRefusal = held.reason;
+      if (held.ok) {
+        reservationId = held.reservationId;
+        tokenCeiling = Math.min(tokenCeiling, held.tokenCeiling);
+      } else {
+        creditRefusal = held.reason;
+      }
     }
   }
+  const client = new ModelClient({ ...aiConfig, tokenBudget: tokenCeiling });
 
   if (aiUnavailable ?? creditRefusal) {
     tracker.skip('ai_semantic_investigation', aiUnavailable ?? creditRefusal!);
     emit('ai_semantic_investigation');
   } else {
-    const aiReport = await runStage('ai_semantic_investigation', () => investigate(map, client));
+    // Planned to fit the budget rather than cut off part-way through it.
+    const aiReport = await runStage('ai_semantic_investigation', () =>
+      investigate(map, client, { maxTargets: plannedTargets }));
     if (aiReport) {
       outcome.aiReport = aiReport;
       allFindings.push(...aiReport.findings);

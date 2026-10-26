@@ -277,6 +277,52 @@ function rowToReservation(r: Record<string, unknown>): Reservation {
   };
 }
 
+/**
+ * Release holds belonging to scans a dead process left behind, and fail those scans.
+ *
+ * Safe to run at boot, and only at boot, because this deployment is
+ * single-writer by rule (docs/DEPLOYMENT.md: "Run exactly one instance"). No
+ * other process can be mid-scan, so a `scan_jobs` row still marked `running`
+ * when we start belongs to a process that is gone.
+ *
+ * `releaseStaleReservations` cannot see these holds — its predicate excludes
+ * `running`, and nothing heartbeats that status — so without this they are held
+ * forever: the customer's balance is permanently short, with no ledger entry
+ * explaining where the credits went and no AI analysis delivered for them.
+ */
+export function recoverOrphanedScans(db: Db): { reservations: number; scans: number } {
+  return db.tx(() => {
+    const orphaned = db.all<{ id: string }>(
+      `SELECT r.id FROM credit_reservations r
+         JOIN scan_jobs s ON s.id = r.scan_id
+        WHERE r.status = 'held' AND s.status = 'running'`,
+    );
+    let reservations = 0;
+    for (const { id } of orphaned) {
+      try {
+        release(db, id, 'scan interrupted by a restart');
+        reservations++;
+      } catch {
+        // Raced with a settle that got there first; nothing to return.
+      }
+    }
+    // Settle the scan rows too, or they read as running in the dashboard
+    // forever and every later boot re-examines them.
+    const before = db.get<{ n: number }>(
+      "SELECT COUNT(*) AS n FROM scan_jobs WHERE status = 'running'",
+    );
+    db.run(
+      `UPDATE scan_jobs
+          SET status = 'failed',
+              error_message = COALESCE(error_message, 'interrupted by a restart'),
+              finished_at = ?
+        WHERE status = 'running'`,
+      now(),
+    );
+    return { reservations, scans: Number(before?.n ?? 0) };
+  });
+}
+
 export interface LedgerEntry {
   delta: number;
   balanceAfter: number;
