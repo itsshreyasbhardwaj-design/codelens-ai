@@ -141,7 +141,7 @@ provider configured the app says so and leaves every account on the free plan;
 with Stripe selected but no webhook secret it **refuses to run billing at all**,
 because entitlements would otherwise rest on an unverified request.
 
-**244 automated tests**, zero runtime test dependencies: Node's built-in test
+**251 automated tests**, zero runtime test dependencies: Node's built-in test
 runner and native TypeScript.
 
 ## Not implemented
@@ -194,7 +194,7 @@ Stated plainly rather than stubbed.
 
 ## How this was verified, and what was not
 
-Verified by execution: the type checker and the 244-test suite (unit,
+Verified by execution: the type checker and the 251-test suite (unit,
 integration, and a single end-to-end journey test that ingests the fixture,
 diagnoses it, generates and validates Fix Packs, exports every report format,
 applies fixes, re-scans and compares); the accuracy harness; a production build
@@ -457,6 +457,44 @@ an invoice naming an organisation this installation has never seen, which would
 otherwise hit the notifications foreign key, roll back the whole event including
 its `payment_events` row, and have the route answer 500 for Stripe to retry for
 days.
+
+## A sixth round: the residue of earlier fixes
+
+Two findings, both in code an earlier round introduced.
+
+- **A failed first scan consumed a Free account's only project slot, for good.**
+  `beginScan` creates the project before ingestion has done anything, and
+  `projectCount` counted the row. Nothing in this release sets `deleted_at`, so
+  the slot was never reclaimed and the user could not scan anything else — ever.
+  The reachable triggers are worse than a typo'd repository name: a *correct*
+  public repository over the Free plan's 50 MB ceiling does it, with no user
+  error at all, through the size check added one round earlier. A slot is now
+  held by a project that has been analysed or is being analysed, not by the
+  existence of a row. The failed project stays on the dashboard with its
+  reason; it just costs nothing.
+  This is a deliberate contract change — "one analysed project holds a slot"
+  rather than "one project row holds a slot" — and it changed an existing
+  passing test, which is recorded rather than quietly edited.
+- **Two checkout sessions could both be paid.** The guard added in round one
+  refuses a second subscription checkout once one exists, but two sessions
+  opened before *any* subscription existed both pass, and a Checkout Session
+  stays payable at the provider for about 24 hours. So no guard on session
+  *creation* can close this window: the second payment can land long after the
+  guard started refusing. One tab a minute apart is enough, because the
+  provider idempotency key carries the minute.
+  The fix does not try to serialise checkout. It detects the duplicate where it
+  becomes a fact — in the webhook, as one subscription supersedes another — and
+  says so in the log and in a notification, because superseding marks the old
+  subscription cancelled *locally only* and it is still charging the customer.
+  Three consequences the finding did not mention were measured and are covered
+  by the alert: entitlement flapping between the two plans on every subscription
+  event, a failed invoice on the duplicate marking the *good* subscription
+  `past_due` and locking checkout with a 402, and cancelling the duplicate
+  setting `plan_code` to free while the real subscription is still active.
+
+The verification pass again downgraded a severity (the checkout race needs two
+deliberate card payments, so P2 rather than P1) and again corrected an
+attribution (`beginScan` landed in `3b0a8e5`, not `aa4f97b`).
 
 ## Self-audit false positives, found and fixed
 

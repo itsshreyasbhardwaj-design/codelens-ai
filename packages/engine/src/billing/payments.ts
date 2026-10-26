@@ -482,6 +482,48 @@ function handle(db: Db, provider: ProviderName, event: WebhookEvent): WebhookOut
       // below — remove one without the other and a paying customer is
       // downgraded to free.
       if (ENTITLING_STATUSES.includes(mapped)) {
+        // Name the subscription about to be superseded first, because
+        // superseding marks it cancelled in SQLite ONLY — the provider is never
+        // told — so a row leaving here is a subscription that is still charging
+        // the customer.
+        //
+        // The checkout route cannot prevent this. Its guard refuses a second
+        // checkout once a subscription exists, but a Checkout Session created
+        // while none existed stays payable at the provider for up to 24 hours,
+        // so the second payment can land long after the guard started refusing.
+        // Two tabs, or one tab a minute apart, is enough to create two payable
+        // sessions. Serialising session creation would not close that window;
+        // detecting the duplicate where it becomes a fact does.
+        const rival = db.get<{ sub: string; code: string }>(
+          `SELECT s.provider_subscription_id AS sub, p.code AS code
+             FROM subscriptions s JOIN subscription_plans p ON p.id = s.plan_id
+            WHERE s.organization_id = ? AND s.status IN ('active','trialing','past_due')
+              AND NOT (s.provider = ? AND s.provider_subscription_id = ?)`,
+          organizationId, provider, subId,
+        );
+        if (rival) {
+          console.error(
+            `[billing] organisation ${organizationId} has two live subscriptions: `
+            + `${rival.sub} (${rival.code}) superseded locally by ${subId} (${plan.code}). `
+            + `${rival.sub} is still charging at ${provider}; cancel and refund it there.`,
+          );
+          const link = `/billing#duplicate-${rival.sub}`;
+          if (!db.get(
+            "SELECT id FROM notifications WHERE organization_id = ? AND kind = 'duplicate_subscription' AND link = ?",
+            organizationId, link,
+          )) {
+            db.run(
+              `INSERT INTO notifications (id, organization_id, kind, title, body, link, created_at)
+               VALUES (?,?,'duplicate_subscription','Two subscriptions are active',?,?,?)`,
+              randomUUID(), organizationId,
+              `A second subscription (${subId}, ${plan.code}) is now active. The earlier one `
+              + `(${rival.sub}, ${rival.code}) is still being charged by the payment provider and `
+              + `must be cancelled and refunded there — this application cannot do it.`,
+              link, now(),
+            );
+          }
+        }
+
         db.run(
           `UPDATE subscriptions SET status = 'canceled', updated_at = ?
             WHERE organization_id = ? AND status IN ('active','trialing','past_due')

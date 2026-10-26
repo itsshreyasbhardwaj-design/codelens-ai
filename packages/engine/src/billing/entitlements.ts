@@ -37,7 +37,26 @@ export function scansThisMonth(db: Db, organizationId: string, atIso: string): n
 
 export function projectCount(db: Db, organizationId: string): number {
   const row = db.get<{ n: number }>(
-    'SELECT COUNT(*) AS n FROM projects WHERE organization_id = ? AND deleted_at IS NULL',
+    // A slot is held by a project that has been analysed, or whose first
+    // analysis is still running — not by the mere existence of a row.
+    //
+    // `beginScan` creates the project before ingestion has done anything, so a
+    // first scan that 404s on the repository, or exceeds the plan's size
+    // ceiling, consumed a Free account's only slot permanently: nothing in this
+    // release sets `deleted_at`, so it was never reclaimed and the user could
+    // not scan anything else. The row is kept — the failure stays on the
+    // dashboard with its reason — it just no longer costs a slot.
+    //
+    // `finished_at IS NULL` is load-bearing. Without it two first scans started
+    // back to back both see an empty count, and a one-project plan ends up with
+    // two projects. It is safe because `recoverOrphanedScans` rewrites every
+    // `running` row at boot, so a dead process cannot hold a slot for ever.
+    `SELECT COUNT(*) AS n FROM projects p
+      WHERE p.organization_id = ? AND p.deleted_at IS NULL
+        AND EXISTS (SELECT 1 FROM scan_jobs s
+                     WHERE s.project_id = p.id
+                       AND (s.status IN ('completed','partial')
+                            OR s.finished_at IS NULL))`,
     organizationId,
   );
   return Number(row?.n ?? 0);

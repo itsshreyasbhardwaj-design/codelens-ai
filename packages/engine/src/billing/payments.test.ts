@@ -538,3 +538,72 @@ describe('a failed invoice finds its organisation', () => {
     assert.equal(notifications(db, org).length, 0);
   });
 });
+
+describe('two live subscriptions are detected and surfaced', () => {
+  function sub(org: string, eventId: string, subId: string, code: string, status = 'active') {
+    return {
+      id: eventId, type: 'customer.subscription.created',
+      data: { id: subId, status, metadata: { organization_id: org, code } },
+    };
+  }
+  const alerts = (db: Db, org: string) =>
+    db.all("SELECT body FROM notifications WHERE organization_id = ? AND kind = 'duplicate_subscription'", org);
+
+  it('raises an alert when a second subscription supersedes a live one', (t) => {
+    const { db, org } = setup();
+    t.after(() => db.close());
+    // Two Checkout Sessions created before either was paid — the route's guard
+    // sees no subscription row and allows both. A session stays payable at the
+    // provider for ~24h, so no guard on session CREATION can close this; the
+    // duplicate is only a fact once the second payment lands here.
+    applyWebhookEvent(db, 'stripe', sub(org, 'e1', 'sub_solo', 'solo'));
+    applyWebhookEvent(db, 'stripe', sub(org, 'e2', 'sub_pro', 'pro'));
+
+    const found = alerts(db, org);
+    assert.equal(found.length, 1, 'the superseded subscription is still charging; say so');
+    assert.match(found[0]!.body as string, /sub_solo/);
+    assert.match(found[0]!.body as string, /cannot do it/);
+  });
+
+  it('stays silent for an ordinary single subscription and its renewals', (t) => {
+    const { db, org } = setup();
+    t.after(() => db.close());
+    applyWebhookEvent(db, 'stripe', sub(org, 'e1', 'sub_a', 'pro'));
+    applyWebhookEvent(db, 'stripe', { ...sub(org, 'e2', 'sub_a', 'pro'), type: 'customer.subscription.updated' });
+    applyWebhookEvent(db, 'stripe', { ...sub(org, 'e3', 'sub_a', 'pro'), type: 'customer.subscription.updated' });
+    assert.equal(alerts(db, org).length, 0, 'a renewal of the same subscription is not a duplicate');
+  });
+
+  it('stays silent when a cancelled customer resubscribes later', (t) => {
+    const { db, org } = setup();
+    t.after(() => db.close());
+    applyWebhookEvent(db, 'stripe', sub(org, 'e1', 'sub_a', 'pro'));
+    applyWebhookEvent(db, 'stripe', {
+      id: 'e2', type: 'customer.subscription.deleted',
+      data: { id: 'sub_a', status: 'canceled', metadata: { organization_id: org, code: 'pro' } },
+    });
+    applyWebhookEvent(db, 'stripe', sub(org, 'e3', 'sub_b', 'solo'));
+    assert.equal(alerts(db, org).length, 0, 'the first subscription genuinely ended');
+  });
+
+  it('stays silent for an abandoned second checkout', (t) => {
+    const { db, org } = setup();
+    t.after(() => db.close());
+    applyWebhookEvent(db, 'stripe', sub(org, 'e1', 'sub_a', 'pro'));
+    // Never paid, so it never becomes a second live subscription.
+    applyWebhookEvent(db, 'stripe', sub(org, 'e2', 'sub_b', 'solo', 'incomplete'));
+    assert.equal(alerts(db, org).length, 0);
+  });
+
+  it('alerts once, not once per renewal of the duplicate', (t) => {
+    const { db, org } = setup();
+    t.after(() => db.close());
+    applyWebhookEvent(db, 'stripe', sub(org, 'e1', 'sub_solo', 'solo'));
+    applyWebhookEvent(db, 'stripe', sub(org, 'e2', 'sub_pro', 'pro'));
+    applyWebhookEvent(db, 'stripe', { ...sub(org, 'e3', 'sub_solo', 'solo'), type: 'customer.subscription.updated' });
+    applyWebhookEvent(db, 'stripe', { ...sub(org, 'e4', 'sub_pro', 'pro'), type: 'customer.subscription.updated' });
+    // Each side supersedes the other on every event, so an unkeyed insert would
+    // write a row per webhook for as long as both subscriptions live.
+    assert.ok(alerts(db, org).length <= 2, `one alert per rival, got ${alerts(db, org).length}`);
+  });
+});

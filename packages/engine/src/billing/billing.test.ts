@@ -7,7 +7,7 @@ import {
   recoverOrphanedScans, release, releaseStaleReservations, reserve, ReservationNotFound, settle,
 } from './credits.ts';
 import {
-  canAddSeat, canCreateProject, canStartScan, canUseAi, creditsForUsage,
+  canAddSeat, canCreateProject, canStartScan, canUseAi, creditsForUsage, projectCount,
   estimateScanCredits, tokensForCredits, usageSummary,
 } from './entitlements.ts';
 import { DEFAULT_PLANS, listPlans, planByCode, planForOrganization, seedPlans } from './plans.ts';
@@ -234,15 +234,66 @@ describe('credit ledger', () => {
 });
 
 describe('plan limits', () => {
+  // The contract is "one ANALYSED project holds a slot", not "one project row
+  // holds a slot". The row alone is not enough, because `beginScan` writes it
+  // before ingestion has done anything — see projectCount.
+  function analysedProject(db: Db, org: string, id = 'p1'): void {
+    db.run(
+      `INSERT INTO projects (id, organization_id, name, slug, kind, created_at, updated_at)
+       VALUES (?,?,'A','a','source','n','n')`, id, org,
+    );
+    db.run(
+      `INSERT INTO scan_jobs (id, project_id, idempotency_key, status, queued_at, finished_at)
+       VALUES (?,?,?, 'completed','n','n')`, `s_${id}`, id, `k_${id}`,
+    );
+  }
+
   it('stops a free organisation creating a second project', (t) => {
     const { db, org } = setup();
     t.after(() => db.close());
     assert.equal(canCreateProject(db, org).allowed, true);
-    db.run("INSERT INTO projects (id, organization_id, name, slug, kind, created_at, updated_at) VALUES ('p1',?,'A','a','source','n','n')", org);
+    analysedProject(db, org);
     const check = canCreateProject(db, org);
     assert.equal(check.allowed, false);
     assert.match(check.reason!, /Free plan includes 1 project/);
     assert.equal(check.remedy, 'upgrade');
+  });
+
+  it('does not let a project that was never analysed hold a slot', (t) => {
+    const { db, org } = setup();
+    t.after(() => db.close());
+    // Exactly the failed-first-scan path: `beginScan` created the project, then
+    // ingestion 404'd on the repository or the repo exceeded the plan's size
+    // ceiling, and `failScan` closed the scan. Nothing in this release sets
+    // `deleted_at`, so before this the Free account's only slot was gone for
+    // good and no other project could ever be scanned.
+    db.run(
+      `INSERT INTO projects (id, organization_id, name, slug, kind, created_at, updated_at)
+       VALUES ('dead',?,'Dead','dead','source','n','n')`, org,
+    );
+    db.run(
+      `INSERT INTO scan_jobs (id, project_id, idempotency_key, status, error_message, queued_at, finished_at)
+       VALUES ('s_dead','dead','k_dead','failed','repository not found','n','n')`,
+    );
+    assert.equal(projectCount(db, org), 0, 'a project that was never analysed holds no slot');
+    assert.equal(canCreateProject(db, org).allowed, true);
+  });
+
+  it('holds the slot while a first scan is still running', (t) => {
+    const { db, org } = setup();
+    t.after(() => db.close());
+    // Otherwise two first scans started back to back both see an empty count,
+    // and a one-project plan ends up with two projects. Safe because
+    // `recoverOrphanedScans` rewrites every running row at boot.
+    db.run(
+      `INSERT INTO projects (id, organization_id, name, slug, kind, created_at, updated_at)
+       VALUES ('live',?,'Live','live','source','n','n')`, org,
+    );
+    db.run(
+      `INSERT INTO scan_jobs (id, project_id, idempotency_key, status, queued_at)
+       VALUES ('s_live','live','k_live','running','n')`,
+    );
+    assert.equal(canCreateProject(db, org).allowed, false, 'an in-flight first scan holds its slot');
   });
 
   it('does not count a deleted project against the limit', (t) => {
