@@ -85,9 +85,20 @@ function dateOnly(iso: string): string {
  * only way to read the value.
  */
 function UsageMeter({
-  label, used, limit, unit, note,
+  label, used, limit, unit, note, limitIsBlocking = true,
 }: {
   label: string; used: number; limit: number | null; unit: string; note?: string;
+  /**
+   * Whether reaching this limit actually stops the customer doing something.
+   *
+   * Default true: a project or scan allowance that is used up does block the
+   * next scan, and saying so in the alarm colour is correct. Seats are the
+   * exception — a one-seat plan sitting at 1 of 1 is the plan working as sold,
+   * not a problem, and this release has no invite flow to be blocked from. A
+   * warning that fires permanently for every free account is a warning people
+   * learn to ignore, which costs us the ones that matter.
+   */
+  limitIsBlocking?: boolean;
 }) {
   const headingStyle = { fontSize: '0.8rem', color: 'var(--ink-3)', textTransform: 'uppercase' as const, letterSpacing: '0.05em', fontWeight: 600 };
 
@@ -107,7 +118,8 @@ function UsageMeter({
   }
 
   const percent = Math.min(100, Math.round((used / limit) * 100));
-  const atLimit = used >= limit;
+  const full = used >= limit;
+  const atLimit = full && limitIsBlocking;
   const colour = atLimit ? 'var(--critical)' : percent >= 80 ? 'var(--medium)' : 'var(--accent)';
 
   return (
@@ -129,7 +141,11 @@ function UsageMeter({
         </span>
       </div>
       <div style={{ fontSize: '0.8rem', color: atLimit ? 'var(--critical)' : 'var(--ink-3)' }}>
-        {atLimit ? `At the limit for ${unit}.` : `${percent}% of the ${unit} on this plan.`}
+        {atLimit
+          ? `At the limit for ${unit}.`
+          : full
+            ? `Using all ${num(limit)} ${limit === 1 ? unit.replace(/s$/, '') : unit} on this plan.`
+            : `${percent}% of the ${unit} on this plan.`}
         {note ? ` ${note}` : ''}
       </div>
     </div>
@@ -334,7 +350,14 @@ export default async function BillingPage({
               unit="scans"
               note={`Resets on ${dateOnly(summary.scans.resetsOn)}.`}
             />
-            <UsageMeter label="Seats" used={summary.seats.used} limit={summary.seats.limit} unit="seats" />
+            <UsageMeter
+              label="Seats"
+              used={summary.seats.used}
+              limit={summary.seats.limit}
+              unit="seats"
+              limitIsBlocking={false}
+              note="Team invitations are not implemented in this release, so a full seat count blocks nothing today."
+            />
           </div>
         </Card>
 
@@ -372,23 +395,12 @@ export default async function BillingPage({
           ) : null}
         </Card>
 
-        {/*
-          The ledger is wider than a phone screen, and the shared Table scrolls
-          it inside its own container. That only works if this grid item may be
-          narrower than its contents: a grid item's default `min-width: auto`
-          would otherwise widen the whole column to the table's intrinsic width
-          and scroll the page sideways instead of the table. Measured at 380px:
-          without this wrapper the document is 569px wide; with it, 380px, and
-          the table scrolls within the card as intended.
-        */}
-        <div style={{ minWidth: 0 }}>
-          <Card>
-            <SectionHeading hint="Every movement, newest first, up to the last 50. The balance after each entry is the one recorded at the time, so a charge can be checked line by line.">
-              Credit ledger
-            </SectionHeading>
-            <LedgerTable entries={entries} />
-          </Card>
-        </div>
+        <Card>
+          <SectionHeading hint="Every movement, newest first, up to the last 50. The balance after each entry is the one recorded at the time, so a charge can be checked line by line.">
+            Credit ledger
+          </SectionHeading>
+          <LedgerTable entries={entries} />
+        </Card>
 
         <Card>
           <SectionHeading hint="A plan change takes effect when the payment provider confirms it, not when the browser comes back.">

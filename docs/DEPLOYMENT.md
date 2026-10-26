@@ -114,6 +114,7 @@ Authoritative list is `.env.example`. Every variable there is optional **except*
 | `CODELENS_PAYMENT_PROVIDER` | `none` | `stripe` or `none`. With `none`, billing is off and every account stays on the free plan. The UI says so plainly rather than offering an upgrade button that cannot work. |
 | `STRIPE_SECRET_KEY`, `STRIPE_WEBHOOK_SECRET` | unset | Both needed. The provider refuses to run with a secret key but no webhook secret, because entitlements would then rest on an unverified request. |
 | `STRIPE_PRICE_<CODE>` | unset | Maps a plan or product code to a Stripe price id, e.g. `STRIPE_PRICE_PRO`. |
+| `CODELENS_PUBLIC_URL` | the request's own origin | Absolute origin that checkout return URLs are built from. Unset, the request's `Host` is used, with the scheme from `X-Forwarded-Proto` when a proxy sets it — correct for a plain single-host deployment. Set it when the host the customer is on is not the host reaching this process: behind a proxy that rewrites `Host`, or on a custom domain. A value that is not an absolute http/https origin is refused at checkout, naming the variable. |
 | `GITHUB_TOKEN` | unset | Read-only scopes only. Raises the GitHub API rate limit for repository ingestion. |
 | `CODELENS_DYNAMIC_VERIFY` | `off` | Leave it off. It is not a sandbox (ADR-005) and it refuses project build scripts by design. |
 

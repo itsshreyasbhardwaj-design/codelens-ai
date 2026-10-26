@@ -67,7 +67,12 @@ function exportCatalogue(fixPackCount: number, findingCount: number): ExportEntr
     {
       kind: 'tech-md',
       name: 'Architecture documentation',
-      format: 'Markdown — the architecture section of the technical report',
+      // Just the format. The sentence that used to be appended here
+      // ("— the architecture section of the technical report") is already the
+      // first line of `note` below, and inside a `Tag` it could not wrap:
+      // nowrap made it one unbreakable 390px token, which sized the whole
+      // card grid's column and pushed the page 31px wider than a 375px phone.
+      format: 'Markdown',
       contains:
         'Components and relationships with their provenance, a Mermaid diagram of the graph, the API '
         + 'surface with authentication and validation per route, the data models, and the feature inventory.',

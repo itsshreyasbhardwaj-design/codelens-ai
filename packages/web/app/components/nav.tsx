@@ -102,7 +102,26 @@ export function Shell({ children }: { children: React.ReactNode }) {
   return (
     <main
       id="main"
-      style={{ maxWidth: '78rem', margin: '0 auto', padding: '1.5rem 1rem 4rem', display: 'grid', gap: '1.25rem' }}
+      style={{
+        maxWidth: '78rem', margin: '0 auto', padding: '1.5rem 1rem 4rem',
+        display: 'grid', gap: '1.25rem',
+        // `minmax(0, 1fr)` rather than the implicit `1fr`.
+        //
+        // A grid item's default `min-width: auto` refuses to shrink below its
+        // content's minimum width. `Table` already wraps itself in
+        // `overflow-x: auto` so a wide table scrolls inside its card — but that
+        // wrapper can never engage while the card above it is a grid item that
+        // will not narrow. The card widens instead and takes the page with it.
+        //
+        // Measured on /billing at 375px, where the credit ledger is the widest
+        // table in the application: `document.body.scrollWidth` was 558px
+        // without this declaration and 375px with it. Use `body.scrollWidth`,
+        // or whether the page actually scrolls, to check this —
+        // `documentElement.scrollWidth` reports the unclipped width of content
+        // inside a scroll container and reads as overflow on pages that are
+        // perfectly fine.
+        gridTemplateColumns: 'minmax(0, 1fr)',
+      }}
     >
       {children}
     </main>
