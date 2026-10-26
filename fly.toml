@@ -46,6 +46,19 @@ primary_region = "iad"
   # with `fly secrets set`, never here.
   CODELENS_AI_PROVIDER = "none"
 
+  # Stripe price ids, one per plan and credit-pack code. NOT secrets — they
+  # identify a price, they do not authorise anything — so they belong here
+  # rather than in `fly secrets`. `loadStripeConfig` finds them by scanning for
+  # the STRIPE_PRICE_ prefix, so any code works, but the variable has to be set
+  # for the code to resolve: without it that plan's checkout is refused with a
+  # message naming the missing variable. Uncomment and fill the ones you sell.
+  # STRIPE_PRICE_SOLO = "price_..."
+  # STRIPE_PRICE_PRO = "price_..."
+  # STRIPE_PRICE_TEAM = "price_..."
+  # STRIPE_PRICE_CREDITS_10 = "price_..."
+  # STRIPE_PRICE_CREDITS_30 = "price_..."
+  # STRIPE_PRICE_CREDITS_80 = "price_..."
+
 # CODELENS_SECRET_KEY, GITHUB_TOKEN, STRIPE_SECRET_KEY and
 # STRIPE_WEBHOOK_SECRET are secrets: `fly secrets set`, never [env].
 

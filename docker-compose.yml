@@ -39,6 +39,31 @@ services:
       CODELENS_PAYMENT_PROVIDER: ${CODELENS_PAYMENT_PROVIDER:-none}
       STRIPE_SECRET_KEY: ${STRIPE_SECRET_KEY:-}
       STRIPE_WEBHOOK_SECRET: ${STRIPE_WEBHOOK_SECRET:-}
+      # One per plan and credit-pack code. `loadStripeConfig` discovers these by
+      # scanning for the STRIPE_PRICE_ prefix, so it supports any code — but
+      # Compose only passes through what is named here, and without them
+      # `priceIds` is empty and every checkout is refused with
+      # ProviderNotConfigured while billing otherwise looks enabled.
+      #
+      # ADD A LINE HERE WHEN YOU ADD A PLAN. The prefix scan will not save you:
+      # the variable has to reach the container first.
+      STRIPE_PRICE_SOLO: ${STRIPE_PRICE_SOLO:-}
+      STRIPE_PRICE_PRO: ${STRIPE_PRICE_PRO:-}
+      STRIPE_PRICE_TEAM: ${STRIPE_PRICE_TEAM:-}
+      STRIPE_PRICE_CREDITS_10: ${STRIPE_PRICE_CREDITS_10:-}
+      STRIPE_PRICE_CREDITS_30: ${STRIPE_PRICE_CREDITS_30:-}
+      STRIPE_PRICE_CREDITS_80: ${STRIPE_PRICE_CREDITS_80:-}
+      # Only needed when the host the customer reaches is not the host that
+      # reaches this process — behind a proxy that rewrites Host, or on a custom
+      # domain. Unset, checkout return URLs use the request's own origin.
+      CODELENS_PUBLIC_URL: ${CODELENS_PUBLIC_URL:-}
+      # An external AI provider needs its key AND the acknowledgement above;
+      # without the key the provider refuses rather than running degraded.
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      CODELENS_AI_TOKEN_BUDGET: ${CODELENS_AI_TOKEN_BUDGET:-120000}
+      # Read-only scopes. Raises the GitHub rate limit and reaches private repos.
+      GITHUB_TOKEN: ${GITHUB_TOKEN:-}
       CODELENS_RETENTION_DAYS: ${CODELENS_RETENTION_DAYS:-30}
       # Stays off. It is not a sandbox — see ADR-005.
       CODELENS_DYNAMIC_VERIFY: "off"
