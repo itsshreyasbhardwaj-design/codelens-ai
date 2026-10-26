@@ -12,6 +12,14 @@ Every finding carries a file, a line, and the excerpt it was derived from, and a
 finding whose evidence cannot be re-verified against the analysed snapshot is
 refused rather than reported.
 
+## See it before installing
+
+A real report from the bundled demonstration project, published as static HTML:
+**[itsshreyasbhardwaj-design.github.io/codelens-ai](https://itsshreyasbhardwaj-design.github.io/codelens-ai/)**
+
+Executive summary, the full technical report, and all 16 generated Fix Packs.
+The project scanned is deliberately defective and clearly labelled as synthetic.
+
 ## What makes it different
 
 Most tools either run a linter and hand you 400 warnings, or send your

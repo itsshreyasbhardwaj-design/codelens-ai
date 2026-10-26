@@ -1,0 +1,215 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Vulnerable Shop (synthetic demo) — Executive summary</title>
+<style>
+:root {
+  --ink: #16181d;
+  --muted: #5c6370;
+  --rule: #d8dce3;
+  --critical: #a4133c;
+  --high: #c05621;
+  --medium: #8a6d1f;
+  --low: #3b6ea5;
+  --surface: #f6f7f9;
+}
+* { box-sizing: border-box; }
+body {
+  font: 11pt/1.55 ui-serif, Georgia, 'Times New Roman', serif;
+  color: var(--ink);
+  margin: 0 auto;
+  padding: 2rem 1.5rem 4rem;
+  max-width: 50rem;
+  background: #fff;
+}
+h1, h2, h3, h4 { font-family: ui-sans-serif, system-ui, -apple-system, 'Segoe UI', sans-serif; line-height: 1.25; }
+h1 { font-size: 1.9rem; margin: 0 0 .25rem; letter-spacing: -0.015em; }
+h2 { font-size: 1.3rem; margin: 2.25rem 0 .75rem; padding-bottom: .3rem; border-bottom: 2px solid var(--rule); }
+h3 { font-size: 1.05rem; margin: 1.6rem 0 .4rem; }
+h4 { font-size: .95rem; margin: 1.2rem 0 .3rem; color: var(--muted); }
+p, li { orphans: 3; widows: 3; }
+.meta { color: var(--muted); font-size: .85rem; margin-bottom: 1.5rem; }
+table { width: 100%; border-collapse: collapse; margin: .75rem 0 1.25rem; font-size: .82rem; }
+th, td { text-align: left; padding: .4rem .5rem; border-bottom: 1px solid var(--rule); vertical-align: top; }
+th { background: var(--surface); font-family: ui-sans-serif, system-ui, sans-serif; font-weight: 600; }
+code, pre { font-family: ui-monospace, 'SF Mono', Menlo, Consolas, monospace; font-size: .8rem; }
+pre {
+  background: var(--surface); padding: .6rem .7rem; border-left: 3px solid var(--rule);
+  overflow-x: auto; white-space: pre-wrap; word-break: break-word; margin: .5rem 0;
+}
+.sev { font-weight: 600; font-family: ui-sans-serif, system-ui, sans-serif; font-size: .78rem; text-transform: uppercase; letter-spacing: .04em; }
+.sev-critical { color: var(--critical); }
+.sev-high { color: var(--high); }
+.sev-medium { color: var(--medium); }
+.sev-low, .sev-info { color: var(--low); }
+.callout {
+  border: 1px solid var(--rule); border-left: 4px solid var(--medium);
+  background: var(--surface); padding: .75rem 1rem; margin: 1.25rem 0; font-size: .9rem;
+}
+.finding { border-top: 1px solid var(--rule); padding-top: 1rem; margin-top: 1.5rem; break-inside: avoid-page; }
+.badges { color: var(--muted); font-size: .8rem; font-family: ui-sans-serif, system-ui, sans-serif; margin: .2rem 0 .6rem; }
+dl { margin: .5rem 0; }
+dt { font-weight: 600; font-size: .85rem; font-family: ui-sans-serif, system-ui, sans-serif; margin-top: .6rem; }
+dd { margin: .15rem 0 0; }
+footer { margin-top: 3rem; padding-top: 1rem; border-top: 1px solid var(--rule); color: var(--muted); font-size: .78rem; }
+.no-print { margin: 1rem 0 2rem; }
+button {
+  font: inherit; font-family: ui-sans-serif, system-ui, sans-serif; font-size: .9rem;
+  padding: .5rem 1rem; border: 1px solid var(--ink); background: var(--ink); color: #fff;
+  border-radius: 6px; cursor: pointer;
+}
+@media print {
+  body { padding: 0; max-width: none; font-size: 10pt; }
+  .no-print { display: none; }
+  h2 { break-before: page; }
+  h2:first-of-type { break-before: avoid; }
+  a[href^="http"]::after { content: " (" attr(href) ")"; font-size: .75em; color: #555; }
+  pre, table, .finding { break-inside: avoid; }
+}
+@page { margin: 18mm 16mm; }
+</style>
+</head>
+<body>
+<div class="no-print"><button onclick="window.print()">Save as PDF</button></div>
+<h1>Vulnerable Shop (synthetic demo) — Executive summary</h1>
+<p class="meta">CodeLens AI scan <code>scan_677c7c87-e22a-4ee7-8a8a-76b460ddef01</code> · status <strong>completed</strong> · file-set hash <code>703178b1a9eeff35</code></p>
+<div class="callout"><strong>How to read this report.</strong> It reports static analysis of a code snapshot and cannot prove the absence of defects. Severity is what an issue would cost if real; confidence is how strong the evidence is. Read both. Nothing here is a runtime measurement unless a dynamic verification stage is recorded as completed.</div>
+<h2>Assessment</h2>
+<p><strong>Overall: 30/100 (F).</strong> Graded from 100% of the assessment weight.</p>
+<table><thead><tr><th>Area</th><th>Score</th><th>Grade</th><th>Weight</th><th>Reason if ungraded</th></tr></thead><tbody>
+<tr><td>security</td><td>0</td><td>F</td><td>25%</td><td></td></tr>
+<tr><td>reliability</td><td>0</td><td>F</td><td>20%</td><td></td></tr>
+<tr><td>architecture</td><td>66</td><td>C</td><td>15%</td><td></td></tr>
+<tr><td>performance</td><td>58</td><td>D</td><td>10%</td><td></td></tr>
+<tr><td>scalability</td><td>79</td><td>B</td><td>10%</td><td></td></tr>
+<tr><td>testing</td><td>14</td><td>F</td><td>10%</td><td></td></tr>
+<tr><td>accessibility</td><td>86</td><td>B</td><td>5%</td><td></td></tr>
+<tr><td>deployment</td><td>8</td><td>F</td><td>5%</td><td></td></tr>
+</tbody></table>
+<h2>Coverage</h2>
+<table><tbody>
+<tr><th>Files indexed</th><td>24 of 24</td></tr>
+<tr><th>Files parsed</th><td>15</td></tr>
+<tr><th>Parse coverage</th><td>100%</td></tr>
+<tr><th>Analyzers run</th><td>security, reliability, performance, scalability, accessibility, quality, testing, devops, cost, ai</td></tr>
+<tr><th>Deep languages</th><td>javascript, tsx, typescript</td></tr>
+<tr><th>Shallow languages</th><td>dockerfile, dotenv, json, prisma, yaml</td></tr>
+<tr><th>Layers completed</th><td>static: yes, cross-file: yes, AI: no, dynamic: no</td></tr>
+</tbody></table>
+<h2>Findings</h2>
+<table><thead><tr><th>ID</th><th>Priority</th><th>Severity</th><th>Confidence</th><th>Title</th><th>Location</th></tr></thead><tbody>
+<tr><td><code>SEC-001</code></td><td>P0</td><td class="sev sev-critical">critical</td><td>confirmed</td><td>SQL built by string interpolation and passed to pool.query()</td><td><code>src/lib/db.ts:12</code></td></tr>
+<tr><td><code>SEC-002</code></td><td>P0</td><td class="sev sev-critical">critical</td><td>strong</td><td>DELETE /api/orders/[id] performs no authentication check</td><td><code>src/app/api/orders/[id]/route.ts:24</code></td></tr>
+<tr><td><code>SEC-003</code></td><td>P0</td><td class="sev sev-critical">critical</td><td>strong</td><td>GET /api/orders/[id] reads a Order by request id without checking ownership</td><td><code>src/app/api/orders/[id]/route.ts:11</code></td></tr>
+<tr><td><code>SEC-004</code></td><td>P0</td><td class="sev sev-critical">critical</td><td>strong</td><td>GET /api/admin/stats performs no authentication check</td><td><code>src/app/api/admin/stats/route.ts:11</code></td></tr>
+<tr><td><code>SEC-005</code></td><td>P0</td><td class="sev sev-critical">critical</td><td>confirmed</td><td>Environment file with live-looking credentials is committed: .env</td><td><code>.env:9</code></td></tr>
+<tr><td><code>SEC-006</code></td><td>P0</td><td class="sev sev-critical">critical</td><td>strong</td><td>POST /api/webhooks/stripe processes webhook payloads without verifying the signature</td><td><code>src/app/api/webhooks/stripe/route.ts:13</code></td></tr>
+<tr><td><code>SEC-007</code></td><td>P0</td><td class="sev sev-critical">critical</td><td>strong</td><td>POST /api/login compares passwords without hashing</td><td><code>src/app/api/login/route.ts:15</code></td></tr>
+<tr><td><code>REL-001</code></td><td>P0</td><td class="sev sev-critical">critical</td><td>strong</td><td>POST /api/webhooks/stripe marks the record settled before reading the payment outcome</td><td><code>src/app/api/webhooks/stripe/route.ts:19</code></td></tr>
+<tr><td><code>SEC-008</code></td><td>P1</td><td class="sev sev-high">high</td><td>strong</td><td>PUT /api/upload fetches a URL supplied in the request</td><td><code>src/app/api/upload/route.ts:23</code></td></tr>
+<tr><td><code>SEC-009</code></td><td>P1</td><td class="sev sev-high">high</td><td>strong</td><td>User.password stores a credential in a column with no hashing indicated</td><td><code>prisma/schema.prisma:7</code></td></tr>
+<tr><td><code>SEC-010</code></td><td>P1</td><td class="sev sev-high">high</td><td>strong</td><td>Hardcoded credential in source: hardcoded value assigned to &#39;JWT_SECRET&#39;</td><td><code>src/lib/auth.ts:5</code></td></tr>
+<tr><td><code>SEC-011</code></td><td>P1</td><td class="sev sev-high">high</td><td>strong</td><td>POST /api/login accepts unlimited authentication attempts</td><td><code>src/app/api/login/route.ts:11</code></td></tr>
+<tr><td><code>SEC-012</code></td><td>P1</td><td class="sev sev-high">high</td><td>strong</td><td>POST /api/upload accepts uploads unsafely (3 issues)</td><td><code>src/app/api/upload/route.ts:9</code></td></tr>
+<tr><td><code>SEC-013</code></td><td>P1</td><td class="sev sev-high">high</td><td>strong</td><td>Unsanitised value rendered as HTML in &lt;div&gt;</td><td><code>src/app/products/page.tsx:18</code></td></tr>
+<tr><td><code>REL-002</code></td><td>P1</td><td class="sev sev-high">high</td><td>strong</td><td>OrderSummary.tsx reads customerName, which GET /api/orders/[id] never sends</td><td><code>src/components/OrderSummary.tsx:31</code></td></tr>
+<tr><td><code>REL-003</code></td><td>P1</td><td class="sev sev-high">high</td><td>strong</td><td>OrderSummary.tsx reads shippedAt, which GET /api/orders/[id] never sends</td><td><code>src/components/OrderSummary.tsx:32</code></td></tr>
+<tr><td><code>REL-004</code></td><td>P1</td><td class="sev sev-high">high</td><td>strong</td><td>`order` from prisma.order.findUnique() is dereferenced without a null check</td><td><code>src/app/api/orders/[id]/route.ts:15</code></td></tr>
+<tr><td><code>REL-005</code></td><td>P1</td><td class="sev sev-high">high</td><td>strong</td><td>POST /api/webhooks/stripe processes a replayed delivery twice</td><td><code>src/app/api/webhooks/stripe/route.ts:22</code></td></tr>
+<tr><td><code>REL-006</code></td><td>P1</td><td class="sev sev-high">high</td><td>strong</td><td>button &quot;Pay now&quot; in CheckoutButton.tsx is wired to a handler that does nothing</td><td><code>src/components/CheckoutButton.tsx:10</code></td></tr>
+<tr><td><code>TEST-001</code></td><td>P1</td><td class="sev sev-critical">critical</td><td>strong</td><td>5 route(s) on critical flows have no test: authorisation, authentication, payment, webhook</td><td><code>src/app/api/admin/stats/route.ts:11</code></td></tr>
+<tr><td><code>OPS-001</code></td><td>P1</td><td class="sev sev-high">high</td><td>strong</td><td>.env is baked into the container image by `COPY . .`</td><td><code>Dockerfile:4</code></td></tr>
+<tr><td><code>AI-001</code></td><td>P1</td><td class="sev sev-high">high</td><td>strong</td><td>POST /api/chat lets anonymous callers spend provider budget</td><td><code>src/app/api/chat/route.ts:14</code></td></tr>
+<tr><td><code>COST-001</code></td><td>P1</td><td class="sev sev-high">high</td><td>strong</td><td>client.chat.completions.create() requests inference with no output token ceiling</td><td><code>src/app/api/chat/route.ts:17</code></td></tr>
+<tr><td><code>QUAL-001</code></td><td>P1</td><td class="sev sev-high">high</td><td>strong</td><td>priceWithDiscount() and computeDiscount(): near-duplicate logic that has already drifted apart</td><td><code>src/server/legacy.ts:19</code></td></tr>
+<tr><td><code>TEST-002</code></td><td>P1</td><td class="sev sev-high">high</td><td>strong</td><td>No test exercises an unauthenticated or wrong-user request against 1 protected route(s)</td><td><code>src/app/api/orders/[id]/route.ts:11</code></td></tr>
+<tr><td><code>AI-002</code></td><td>P1</td><td class="sev sev-high">high</td><td>strong</td><td>Request input is interpolated into the system prompt in POST /api/chat</td><td><code>src/app/api/chat/route.ts:15</code></td></tr>
+<tr><td><code>TEST-003</code></td><td>P1</td><td class="sev sev-high">high</td><td>strong</td><td>No test asserts a failure, rejection, or error response</td><td><code>tests/smoke.test.ts:5</code></td></tr>
+<tr><td><code>PERF-001</code></td><td>P1</td><td class="sev sev-high">high</td><td>strong</td><td>Database query inside a for loop (N+1 against Order)</td><td><code>src/app/api/admin/stats/route.ts:18</code></td></tr>
+<tr><td><code>TEST-004</code></td><td>P1</td><td class="sev sev-high">high</td><td>strong</td><td>.github/workflows/deploy.yml deploys without running the test suite</td><td><code>.github/workflows/deploy.yml:20</code></td></tr>
+<tr><td><code>TEST-005</code></td><td>P2</td><td class="sev sev-medium">medium</td><td>strong</td><td>The only test file is a unit test; no integration or end-to-end test exists</td><td><code>tests/smoke.test.ts:5</code></td></tr>
+<tr><td><code>TEST-006</code></td><td>P2</td><td class="sev sev-medium">medium</td><td>strong</td><td>The Search feature has a test that does not exercise it</td><td><code>tests/smoke.test.ts:1</code></td></tr>
+<tr><td><code>OPS-002</code></td><td>P1</td><td class="sev sev-high">high</td><td>strong</td><td>.github/workflows/deploy.yml deploys on every push to the default branch with no gate</td><td><code>.github/workflows/deploy.yml:20</code></td></tr>
+<tr><td><code>SEC-014</code></td><td>P2</td><td class="sev sev-medium">medium</td><td>strong</td><td>No HTTP security headers are configured</td><td><code>next.config.js:1</code></td></tr>
+<tr><td><code>SEC-015</code></td><td>P2</td><td class="sev sev-medium">medium</td><td>strong</td><td>Session token is signed without an expiry</td><td><code>src/lib/auth.ts:11</code></td></tr>
+<tr><td><code>SEC-016</code></td><td>P2</td><td class="sev sev-medium">medium</td><td>strong</td><td>POST /api/chat performs no authentication check</td><td><code>src/app/api/chat/route.ts:14</code></td></tr>
+<tr><td><code>SEC-017</code></td><td>P2</td><td class="sev sev-medium">medium</td><td>strong</td><td>POST /api/upload performs no authentication check</td><td><code>src/app/api/upload/route.ts:9</code></td></tr>
+<tr><td><code>SEC-018</code></td><td>P2</td><td class="sev sev-medium">medium</td><td>strong</td><td>PUT /api/upload performs no authentication check</td><td><code>src/app/api/upload/route.ts:21</code></td></tr>
+<tr><td><code>SEC-019</code></td><td>P2</td><td class="sev sev-medium">medium</td><td>strong</td><td>POST /api/login reveals whether an account exists</td><td><code>src/app/api/login/route.ts:11</code></td></tr>
+<tr><td><code>PERF-002</code></td><td>P2</td><td class="sev sev-medium">medium</td><td>strong</td><td>Order.userId is filtered on in queries but is not indexed</td><td><code>src/app/api/admin/stats/route.ts:18</code></td></tr>
+<tr><td><code>SCALE-001</code></td><td>P2</td><td class="sev sev-medium">medium</td><td>strong</td><td>Database connection pool is created with no explicit size bound (src/lib/db.ts)</td><td><code>src/lib/db.ts:5</code></td></tr>
+<tr><td><code>COST-002</code></td><td>P2</td><td class="sev sev-medium">medium</td><td>strong</td><td>prisma.product.findMany() reads every row and every column of Product</td><td><code>src/lib/db.ts:22</code></td></tr>
+<tr><td><code>PERF-003</code></td><td>P2</td><td class="sev sev-medium">medium</td><td>strong</td><td>products is rendered in full from an unbounded query (no pagination in the view)</td><td><code>src/app/products/page.tsx:11</code></td></tr>
+<tr><td><code>PERF-004</code></td><td>P2</td><td class="sev sev-medium">medium</td><td>strong</td><td>prisma.product.findMany() reads the Product table with no row limit</td><td><code>src/lib/db.ts:22</code></td></tr>
+<tr><td><code>COST-003</code></td><td>P2</td><td class="sev sev-medium">medium</td><td>strong</td><td>prisma.user.findMany() fetches User relation &#39;orders&#39; that the handler never reads</td><td><code>src/app/api/admin/stats/route.ts:12</code></td></tr>
+<tr><td><code>QUAL-002</code></td><td>P2</td><td class="sev sev-medium">medium</td><td>strong</td><td>src/server/legacy.ts builds an HTTP server that nothing starts</td><td><code>src/server/legacy.ts:4</code></td></tr>
+<tr><td><code>AI-003</code></td><td>P2</td><td class="sev sev-medium">medium</td><td>strong</td><td>POST /api/chat returns model output to the client with no validation</td><td><code>src/app/api/chat/route.ts:17</code></td></tr>
+<tr><td><code>REL-007</code></td><td>P2</td><td class="sev sev-medium">medium</td><td>strong</td><td>button &quot;🛒&quot; in page.tsx is wired to a handler that does nothing</td><td><code>src/app/products/page.tsx:21</code></td></tr>
+<tr><td><code>REL-008</code></td><td>P2</td><td class="sev sev-medium">medium</td><td>strong</td><td>sendOrderConfirmation performs external I/O but nothing in the repository calls it</td><td><code>src/lib/mailer.ts:4</code></td></tr>
+<tr><td><code>REL-009</code></td><td>P2</td><td class="sev sev-medium">medium</td><td>strong</td><td>products page awaits data with no error or loading state</td><td><code>src/app/products/page.tsx:6</code></td></tr>
+<tr><td><code>REL-010</code></td><td>P2</td><td class="sev sev-medium">medium</td><td>strong</td><td>DELETE /api/orders/[id] performs I/O with no error handling</td><td><code>src/app/api/orders/[id]/route.ts:24</code></td></tr>
+<tr><td><code>REL-011</code></td><td>P2</td><td class="sev sev-medium">medium</td><td>strong</td><td>Promise chain with no rejection handler in OrderSummary.tsx</td><td><code>src/components/OrderSummary.tsx:21</code></td></tr>
+<tr><td><code>SCALE-002</code></td><td>P2</td><td class="sev sev-medium">medium</td><td>strong</td><td>POST /api/upload stores uploaded files on the instance&#39;s local filesystem</td><td><code>src/app/api/upload/route.ts:13</code></td></tr>
+<tr><td><code>REL-012</code></td><td>P2</td><td class="sev sev-medium">medium</td><td>strong</td><td>POST /api/chat performs I/O with no error handling</td><td><code>src/app/api/chat/route.ts:14</code></td></tr>
+<tr><td><code>REL-013</code></td><td>P2</td><td class="sev sev-medium">medium</td><td>strong</td><td>POST /api/upload, PUT /api/upload performs I/O with no error handling</td><td><code>src/app/api/upload/route.ts:9</code></td></tr>
+<tr><td><code>AI-004</code></td><td>P2</td><td class="sev sev-medium">medium</td><td>strong</td><td>Model call has no explicit bounds (no output token cap; no timeout; no retry, fallback, or error handling) in POST /api/chat</td><td><code>src/app/api/chat/route.ts:17</code></td></tr>
+<tr><td><code>PERF-005</code></td><td>P2</td><td class="sev sev-medium">medium</td><td>moderate</td><td>pool.query() reads the queried table with no row limit</td><td><code>src/lib/db.ts:13</code></td></tr>
+<tr><td><code>SCALE-003</code></td><td>P2</td><td class="sev sev-medium">medium</td><td>strong</td><td>POST /api/webhooks/stripe applies several writes with no transaction on an at-least-once delivery path</td><td><code>src/app/api/webhooks/stripe/route.ts:17</code></td></tr>
+<tr><td><code>A11Y-001</code></td><td>P2</td><td class="sev sev-low">low</td><td>strong</td><td>Data is rendered with no loading or error state in src/app/products/page.tsx</td><td><code>src/app/products/page.tsx:6</code></td></tr>
+<tr><td><code>REL-014</code></td><td>P2</td><td class="sev sev-medium">medium</td><td>strong</td><td>POST /api/webhooks/stripe performs I/O with no error handling</td><td><code>src/app/api/webhooks/stripe/route.ts:13</code></td></tr>
+<tr><td><code>A11Y-002</code></td><td>P2</td><td class="sev sev-medium">medium</td><td>strong</td><td>Image without alt text in src/app/products/page.tsx</td><td><code>src/app/products/page.tsx:14</code></td></tr>
+<tr><td><code>OPS-003</code></td><td>P2</td><td class="sev sev-medium">medium</td><td>strong</td><td>The service is containerised but exposes no health or readiness endpoint</td><td><code>Dockerfile:1</code></td></tr>
+<tr><td><code>COST-004</code></td><td>P2</td><td class="sev sev-medium">medium</td><td>moderate</td><td>Metered model requests are issued from 1 file with no token accounting anywhere in the project</td><td><code>src/app/api/chat/route.ts:17</code></td></tr>
+<tr><td><code>QUAL-003</code></td><td>P2</td><td class="sev sev-medium">medium</td><td>confirmed</td><td>TypeScript strict mode is switched off in tsconfig.json</td><td><code>tsconfig.json:1</code></td></tr>
+<tr><td><code>QUAL-004</code></td><td>P2</td><td class="sev sev-low">low</td><td>strong</td><td>5 environment variables are read ad hoc across 4 modules</td><td><code>src/app/api/admin/stats/route.ts:9</code></td></tr>
+<tr><td><code>REL-015</code></td><td>P2</td><td class="sev sev-low">low</td><td>strong</td><td>SESSION_TTL_HOURS is read from the environment but is not listed in .env.example</td><td><code>src/lib/auth.ts:29</code></td></tr>
+<tr><td><code>REL-016</code></td><td>P2</td><td class="sev sev-low">low</td><td>strong</td><td>ADMIN_EMAILS is read from the environment but is not listed in .env.example</td><td><code>src/app/api/admin/stats/route.ts:9</code></td></tr>
+<tr><td><code>QUAL-005</code></td><td>P2</td><td class="sev sev-low">low</td><td>strong</td><td>src/components/CheckoutButton.tsx exports 1 symbol(s) that nothing imports</td><td><code>src/components/CheckoutButton.tsx:3</code></td></tr>
+<tr><td><code>QUAL-006</code></td><td>P2</td><td class="sev sev-low">low</td><td>strong</td><td>src/components/OrderSummary.tsx exports 1 symbol(s) that nothing imports</td><td><code>src/components/OrderSummary.tsx:15</code></td></tr>
+<tr><td><code>AI-005</code></td><td>P2</td><td class="sev sev-medium">medium</td><td>moderate</td><td>No evaluation suite or golden-output test covers any prompt in this project</td><td><code>src/app/api/chat/route.ts:17</code></td></tr>
+<tr><td><code>REL-017</code></td><td>P2</td><td class="sev sev-medium">medium</td><td>moderate</td><td>1 route(s) in legacy.ts are registered on a server that is never started</td><td><code>src/server/legacy.ts:4</code></td></tr>
+<tr><td><code>SCALE-004</code></td><td>P2</td><td class="sev sev-medium">medium</td><td>moderate</td><td>Outbound calls in the request path have no timeout (1 call site)</td><td><code>src/app/api/upload/route.ts:23</code></td></tr>
+<tr><td><code>COST-005</code></td><td>P2</td><td class="sev sev-low">low</td><td>moderate</td><td>WebhookEvent accumulates rows with traffic and nothing in the project removes them</td><td><code>src/app/api/webhooks/stripe/route.ts:22</code></td></tr>
+<tr><td><code>PERF-006</code></td><td>P2</td><td class="sev sev-medium">medium</td><td>strong</td><td>GET /api/admin/stats returns a whole collection with no pagination parameters</td><td><code>src/app/api/admin/stats/route.ts:11</code></td></tr>
+<tr><td><code>A11Y-003</code></td><td>P2</td><td class="sev sev-medium">medium</td><td>strong</td><td>Control with no accessible name in src/app/products/page.tsx</td><td><code>src/app/products/page.tsx:21</code></td></tr>
+<tr><td><code>OPS-004</code></td><td>P2</td><td class="sev sev-medium">medium</td><td>strong</td><td>Dockerfile defines no USER, so the container runs as root</td><td><code>Dockerfile:1</code></td></tr>
+<tr><td><code>OPS-005</code></td><td>P2</td><td class="sev sev-medium">medium</td><td>strong</td><td>No dependency lockfile is committed, so builds are not reproducible</td><td><code>package.json:12</code></td></tr>
+<tr><td><code>AI-006</code></td><td>P2</td><td class="sev sev-medium">medium</td><td>moderate</td><td>User-submitted content is sent to the OpenAI API with no redaction and no disclosure in the repository</td><td><code>src/app/api/chat/route.ts:17</code></td></tr>
+<tr><td><code>AI-007</code></td><td>P2</td><td class="sev sev-medium">medium</td><td>moderate</td><td>Model calls are not instrumented: no token accounting and no AI tracing</td><td><code>src/app/api/chat/route.ts:17</code></td></tr>
+<tr><td><code>QUAL-007</code></td><td>P2</td><td class="sev sev-low">low</td><td>moderate</td><td>src/lib/db.ts exports prisma, pool as an import-time singleton, which leaves tests no seam</td><td><code>src/lib/db.ts:4</code></td></tr>
+<tr><td><code>COST-006</code></td><td>P2</td><td class="sev sev-low">low</td><td>moderate</td><td>Prisma and node-postgres are two independent database access paths</td><td><code>src/lib/db.ts:13</code></td></tr>
+<tr><td><code>OPS-006</code></td><td>P2</td><td class="sev sev-low">low</td><td>strong</td><td>Dockerfile builds on a floating base image tag (node:20)</td><td><code>Dockerfile:1</code></td></tr>
+<tr><td><code>OPS-007</code></td><td>P2</td><td class="sev sev-low">low</td><td>strong</td><td>No automated dependency update or advisory checking is configured</td><td><code>package.json:12</code></td></tr>
+<tr><td><code>OPS-008</code></td><td>P2</td><td class="sev sev-medium">medium</td><td>moderate</td><td>No error tracking, metrics, or alerting is configured in the repository</td><td><code>package.json:12</code></td></tr>
+<tr><td><code>OPS-009</code></td><td>P2</td><td class="sev sev-low">low</td><td>strong</td><td>Dockerfile declares no health check for the container</td><td><code>Dockerfile:13</code></td></tr>
+<tr><td><code>OPS-010</code></td><td>P2</td><td class="sev sev-medium">medium</td><td>moderate</td><td>.github/workflows/deploy.yml passes a credential as a command-line argument</td><td><code>.github/workflows/deploy.yml:20</code></td></tr>
+<tr><td><code>QUAL-008</code></td><td>P2</td><td class="sev sev-low">low</td><td>strong</td><td>src/lib/mailer.ts exports 1 symbol(s) that nothing imports</td><td><code>src/lib/mailer.ts:3</code></td></tr>
+<tr><td><code>A11Y-004</code></td><td>P2</td><td class="sev sev-low">low</td><td>moderate</td><td>Data is rendered with no loading or error state in src/components/OrderSummary.tsx</td><td><code>src/components/OrderSummary.tsx:21</code></td></tr>
+<tr><td><code>OPS-011</code></td><td>P2</td><td class="sev sev-low">low</td><td>strong</td><td>.github/workflows/deploy.yml pins its pipeline steps by mutable tag rather than commit</td><td><code>.github/workflows/deploy.yml:11</code></td></tr>
+<tr><td><code>PERF-007</code></td><td>P2</td><td class="sev sev-low">low</td><td>moderate</td><td>Raw &lt;img&gt; used in a Next.js view instead of the framework&#39;s image component</td><td><code>src/app/products/page.tsx:14</code></td></tr>
+<tr><td><code>OPS-012</code></td><td>P2</td><td class="sev sev-low">low</td><td>moderate</td><td>Dockerfile ships its build toolchain in the runtime image</td><td><code>Dockerfile:5</code></td></tr>
+</tbody></table>
+<h2>Remediation roadmap</h2>
+<table><thead><tr><th>#</th><th>Fix Pack</th><th>Findings</th><th>Priority</th><th>Effort</th><th>Prerequisites</th></tr></thead><tbody>
+<tr><td>1</td><td>Critical Security and Authorization (part 1 of 2)</td><td>8</td><td>P0</td><td>medium</td><td>none</td></tr>
+<tr><td>2</td><td>Critical Security and Authorization (part 2 of 2)</td><td>3</td><td>P0</td><td>small</td><td>security-access-control-1</td></tr>
+<tr><td>3</td><td>Injection, Upload and Request-Forgery Hardening</td><td>4</td><td>P0</td><td>medium</td><td>security-access-control-1</td></tr>
+<tr><td>4</td><td>Secret Handling and Security Configuration</td><td>4</td><td>P0</td><td>medium</td><td>none</td></tr>
+<tr><td>5</td><td>Backend Reliability and API Contracts (part 1 of 2)</td><td>8</td><td>P0</td><td>medium</td><td>security-access-control-1</td></tr>
+<tr><td>6</td><td>Backend Reliability and API Contracts (part 2 of 2)</td><td>6</td><td>P2</td><td>medium</td><td>security-access-control-1, backend-reliability-1</td></tr>
+<tr><td>7</td><td>Database Integrity and Query Efficiency</td><td>6</td><td>P1</td><td>medium</td><td>security-access-control-1</td></tr>
+<tr><td>8</td><td>Frontend Functionality, State and Accessibility</td><td>6</td><td>P1</td><td>medium</td><td>backend-reliability-1</td></tr>
+<tr><td>9</td><td>Performance and Scalability (part 1 of 2)</td><td>8</td><td>P1</td><td>large</td><td>database-integrity</td></tr>
+<tr><td>10</td><td>Performance and Scalability (part 2 of 2)</td><td>3</td><td>P2</td><td>small</td><td>database-integrity, performance-scalability-1</td></tr>
+<tr><td>11</td><td>AI Integration Safety and Cost Control</td><td>7</td><td>P1</td><td>large</td><td>security-access-control-1</td></tr>
+<tr><td>12</td><td>Maintainability and Dead Code (part 1 of 2)</td><td>8</td><td>P1</td><td>large</td><td>none</td></tr>
+<tr><td>13</td><td>Maintainability and Dead Code (part 2 of 2)</td><td>1</td><td>P2</td><td>small</td><td>maintainability-1</td></tr>
+<tr><td>14</td><td>Testing and Regression Protection</td><td>6</td><td>P1</td><td>large</td><td>security-access-control-1, backend-reliability-1</td></tr>
+<tr><td>15</td><td>Deployment and Production Readiness (part 1 of 2)</td><td>6</td><td>P1</td><td>medium</td><td>testing-regression</td></tr>
+<tr><td>16</td><td>Deployment and Production Readiness (part 2 of 2)</td><td>6</td><td>P1</td><td>medium</td><td>testing-regression, deployment-readiness-1</td></tr>
+</tbody></table>
+<footer>Generated by CodeLens AI. This report describes a code snapshot and is not a certification. It cannot prove the absence of vulnerabilities or defects.</footer>
+</body>
+</html>
