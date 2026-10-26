@@ -323,6 +323,50 @@ function metadataCode(event: WebhookEvent): string | undefined {
   return typeof meta.code === 'string' ? meta.code : undefined;
 }
 
+/**
+ * Resolve the organisation for an invoice event.
+ *
+ * An invoice does not carry our metadata. `createCheckout` attaches
+ * `organization_id` to the SUBSCRIPTION (`subscription_data[metadata]`) and to
+ * the checkout SESSION, and Stripe copies neither onto the invoice — an
+ * invoice's top-level `metadata` is its own. What Stripe does provide is an
+ * immutable snapshot of the subscription's metadata taken at finalisation,
+ * plus the subscription id. Both moved under `parent` in API version
+ * 2025-04-30.basil and sat at the top level before it; nothing here pins a
+ * version, so the webhook endpoint decides which shape arrives and both are
+ * read. Reading an absent field costs nothing.
+ *
+ * Used only by the invoice branch. `metadataOrg` is deliberately left alone:
+ * widening it would change every other branch with it.
+ */
+function invoiceSubscriptionOrg(
+  db: Db, provider: ProviderName, event: WebhookEvent,
+): string | undefined {
+  const parent = event.data.parent as { subscription_details?: Record<string, unknown> } | null | undefined;
+  const details = (parent?.subscription_details ?? event.data.subscription_details) as
+    Record<string, unknown> | null | undefined;
+
+  const snapshot = (details?.metadata ?? {}) as Record<string, unknown>;
+  const fromSnapshot = snapshot.organization_id;
+  if (typeof fromSnapshot === 'string' && fromSnapshot) return fromSnapshot;
+
+  // No snapshot — an invoice finalised before Stripe began taking one, or a
+  // subscription created outside checkout. Fall back to the subscription row we
+  // already store. `provider_subscription_id` is UNIQUE per provider, so this
+  // resolves to exactly one organisation or to none; it never guesses.
+  const fromDetails = details?.subscription;
+  const subId = typeof fromDetails === 'string' && fromDetails
+    ? fromDetails
+    : (typeof event.data.subscription === 'string' && event.data.subscription
+        ? event.data.subscription
+        : undefined);
+  if (!subId) return undefined;
+  return db.get<{ organization_id: string }>(
+    'SELECT organization_id FROM subscriptions WHERE provider = ? AND provider_subscription_id = ?',
+    provider, subId,
+  )?.organization_id;
+}
+
 function handle(db: Db, provider: ProviderName, event: WebhookEvent): WebhookOutcome {
   const organizationId = metadataOrg(event);
   const code = metadataCode(event);
@@ -514,18 +558,44 @@ function handle(db: Db, provider: ProviderName, event: WebhookEvent): WebhookOut
     }
 
     case 'invoice.payment_failed': {
-      if (!organizationId) return { applied: false, action: 'event carried no organisation' };
+      // The invoice's own metadata first, so the existing behaviour is
+      // unchanged where it is present; otherwise resolve through the
+      // subscription. Without this the branch never ran for a real Stripe
+      // subscription invoice at all.
+      const invoiceOrg = organizationId ?? invoiceSubscriptionOrg(db, provider, event);
+      if (!invoiceOrg) return { applied: false, action: 'event carried no organisation' };
+
+      // An organisation named by a payload we have never seen would otherwise
+      // reach the notifications foreign key, throw, roll the whole event back —
+      // including its payment_events row — and have the route answer 500, which
+      // Stripe then retries for days.
+      const known = db.get('SELECT id FROM organizations WHERE id = ?', invoiceOrg);
+      if (!known) return { applied: false, action: 'invoice names an unknown organisation' };
+
       db.run(
         "UPDATE subscriptions SET status = 'past_due', updated_at = ? WHERE organization_id = ? AND status = 'active'",
-        now(), organizationId,
+        now(), invoiceOrg,
       );
-      db.run(
-        `INSERT INTO notifications (id, organization_id, kind, title, body, link, created_at)
-         VALUES (?,?,'payment_failed','Payment failed',?,'/billing',?)`,
-        randomUUID(), organizationId,
-        'We could not take payment for your subscription. Update your card to keep your plan.', now(),
+
+      // One notification per invoice, not per attempt. Stripe retries a failed
+      // payment about four times over two weeks, each a separate event with its
+      // own id, so an unconditional insert wrote four identical rows for one
+      // failed renewal. Nobody had seen that because the branch was unreachable.
+      const invoiceId = typeof event.data.id === 'string' && event.data.id ? event.data.id : event.id;
+      const already = db.get(
+        "SELECT id FROM notifications WHERE organization_id = ? AND kind = 'payment_failed' AND link = ?",
+        invoiceOrg, `/billing#${invoiceId}`,
       );
-      return { applied: true, action: 'marked past due', organizationId };
+      if (!already) {
+        db.run(
+          `INSERT INTO notifications (id, organization_id, kind, title, body, link, created_at)
+           VALUES (?,?,'payment_failed','Payment failed',?,?,?)`,
+          randomUUID(), invoiceOrg,
+          'We could not take payment for your subscription. Update your card to keep your plan.',
+          `/billing#${invoiceId}`, now(),
+        );
+      }
+      return { applied: true, action: 'marked past due', organizationId: invoiceOrg };
     }
 
     default:

@@ -426,3 +426,115 @@ describe('a cancelled subscription stays cancelled', () => {
     assert.equal(planForOrganization(db, org).code, 'pro', 'coming back must still work');
   });
 });
+
+describe('a failed invoice finds its organisation', () => {
+  function activeSub(db: Db, org: string, subId = 'sub_1') {
+    applyWebhookEvent(db, 'stripe', {
+      id: `e_${subId}`, type: 'customer.subscription.created',
+      data: { id: subId, status: 'active', metadata: { organization_id: org, code: 'pro' } },
+    });
+  }
+  const notifications = (db: Db, org: string) =>
+    db.all("SELECT id FROM notifications WHERE organization_id = ? AND kind = 'payment_failed'", org);
+
+  it('resolves through the subscription metadata snapshot', (t) => {
+    const { db, org } = setup();
+    t.after(() => db.close());
+    activeSub(db, org);
+    // An invoice carries no metadata of ours: `createCheckout` attaches the
+    // organisation to the SUBSCRIPTION. Stripe puts a snapshot of it here.
+    const out = applyWebhookEvent(db, 'stripe', {
+      id: 'evt_inv_1', type: 'invoice.payment_failed',
+      data: {
+        id: 'in_1', metadata: {},
+        parent: { subscription_details: { subscription: 'sub_1', metadata: { organization_id: org, code: 'pro' } } },
+      },
+    });
+    assert.equal(out.applied, true);
+    assert.equal(
+      db.get<{ status: string }>("SELECT status FROM subscriptions WHERE provider_subscription_id = 'sub_1'")?.status,
+      'past_due',
+    );
+    assert.equal(notifications(db, org).length, 1);
+  });
+
+  it('resolves through the stored subscription when there is no snapshot', (t) => {
+    const { db, org } = setup();
+    t.after(() => db.close());
+    activeSub(db, org);
+    // The pre-2025-04-30.basil shape: subscription id at the top level.
+    const out = applyWebhookEvent(db, 'stripe', {
+      id: 'evt_inv_2', type: 'invoice.payment_failed',
+      data: { id: 'in_2', metadata: {}, subscription: 'sub_1' },
+    });
+    assert.equal(out.applied, true);
+    assert.equal(out.organizationId, org);
+  });
+
+  it('writes one notification per invoice, not one per retry attempt', (t) => {
+    const { db, org } = setup();
+    t.after(() => db.close());
+    activeSub(db, org);
+    // Stripe retries a failed payment about four times over two weeks, each a
+    // separate event with its own id.
+    for (const id of ['evt_a', 'evt_b', 'evt_c']) {
+      applyWebhookEvent(db, 'stripe', {
+        id, type: 'invoice.payment_failed',
+        data: { id: 'in_same', metadata: {}, subscription: 'sub_1' },
+      });
+    }
+    assert.equal(notifications(db, org).length, 1, 'one failed renewal, one notification');
+  });
+
+  it('refuses an invoice naming an organisation this installation has never seen', (t) => {
+    const { db, org } = setup();
+    t.after(() => db.close());
+    activeSub(db, org);
+    // Reaching the notifications foreign key would throw, roll back the whole
+    // event including its payment_events row, and have the route answer 500 —
+    // which Stripe retries for days.
+    const out = applyWebhookEvent(db, 'stripe', {
+      id: 'evt_bad', type: 'invoice.payment_failed',
+      data: {
+        id: 'in_bad', metadata: {},
+        parent: { subscription_details: { metadata: { organization_id: 'org_does_not_exist' } } },
+      },
+    });
+    assert.equal(out.applied, false);
+    assert.equal(notifications(db, org).length, 0);
+  });
+
+  it('attributes to the right organisation when two have subscriptions', (t) => {
+    const { db, org } = setup();
+    t.after(() => db.close());
+    const other = register(db, { email: `o${Math.random()}@example.com`, password: 'a-good-password' });
+    activeSub(db, org, 'sub_mine');
+    activeSub(db, other.organizationId, 'sub_theirs');
+
+    applyWebhookEvent(db, 'stripe', {
+      id: 'evt_t', type: 'invoice.payment_failed',
+      data: { id: 'in_t', metadata: {}, subscription: 'sub_theirs' },
+    });
+    assert.equal(notifications(db, org).length, 0, 'the wrong organisation must not be notified');
+    assert.equal(notifications(db, other.organizationId).length, 1);
+  });
+
+  it('survives every malformed invoice shape without throwing', (t) => {
+    const { db, org } = setup();
+    t.after(() => db.close());
+    activeSub(db, org);
+    const shapes: Array<Record<string, unknown>> = [
+      { id: 'i1', metadata: {} },
+      { id: 'i2', metadata: {}, parent: null },
+      { id: 'i3', metadata: {}, parent: { quote_details: {} } },
+      { id: 'i4', metadata: {}, subscription_details: null },
+      { id: 'i5', metadata: {}, subscription: 'sub_unknown_to_us' },
+      {},
+    ];
+    shapes.forEach((data, i) => {
+      const out = applyWebhookEvent(db, 'stripe', { id: `evt_m${i}`, type: 'invoice.payment_failed', data });
+      assert.equal(out.applied, false, `shape ${i} must refuse, not guess`);
+    });
+    assert.equal(notifications(db, org).length, 0);
+  });
+});

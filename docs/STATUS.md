@@ -141,7 +141,7 @@ provider configured the app says so and leaves every account on the free plan;
 with Stripe selected but no webhook secret it **refuses to run billing at all**,
 because entitlements would otherwise rest on an unverified request.
 
-**238 automated tests**, zero runtime test dependencies: Node's built-in test
+**244 automated tests**, zero runtime test dependencies: Node's built-in test
 runner and native TypeScript.
 
 ## Not implemented
@@ -194,7 +194,7 @@ Stated plainly rather than stubbed.
 
 ## How this was verified, and what was not
 
-Verified by execution: the type checker and the 238-test suite (unit,
+Verified by execution: the type checker and the 244-test suite (unit,
 integration, and a single end-to-end journey test that ingests the fixture,
 diagnoses it, generates and validates Fix Packs, exports every report format,
 applies fixes, re-scans and compares); the accuracy harness; a production build
@@ -422,6 +422,41 @@ The through-line across all three rounds: every fix that looked obvious was
 wrong in a way only a test of the *adjacent* case revealed. Two of the nine
 earlier fixes introduced regressions, and two of this round's three would have
 if shipped in their first form.
+
+## A fourth round, and the first finding that was overstated
+
+One finding, down from five, four and three — and the first the verification
+pass downgraded rather than confirmed.
+
+**What was real:** an invoice carries none of our metadata. `createCheckout`
+attaches `organization_id` to the *subscription* and to the checkout *session*,
+and Stripe copies neither onto the invoice, so `invoice.payment_failed` resolved
+no organisation and did nothing. Because `applyWebhookEvent` stamps the event
+processed either way and the route answers 200, a redelivery could not repair
+it. The branch now resolves through the subscription metadata snapshot, falling
+back to the stored subscription row.
+
+**What was overstated:** the finding said the subscription is never marked
+`past_due`. In production it is — Stripe fires `customer.subscription.updated`
+when dunning begins, and that event *does* carry the metadata. The one effect
+genuinely lost was a `notifications` row, and nothing in this codebase reads
+that table; it is already documented as a deliberate gap. So the real severity
+today is far below the P2 it was filed as, and it becomes a genuine P2 only
+when something reads notifications.
+
+Fixed anyway: the code was wrong, the fix is small, and the cost of leaving a
+latent defect in a billing path until the day something depends on it is worse
+than the cost of fixing it now.
+
+**The fix would have shipped a new bug in its first form**, for the fifth time
+in four rounds. Stripe retries a failed payment about four times over two weeks,
+each a separate event, and the branch inserted unconditionally — so repairing
+the resolution would have turned one failed renewal into four identical
+notifications. Notifications are now keyed per invoice. A second guard refuses
+an invoice naming an organisation this installation has never seen, which would
+otherwise hit the notifications foreign key, roll back the whole event including
+its `payment_events` row, and have the route answer 500 for Stripe to retry for
+days.
 
 ## Self-audit false positives, found and fixed
 
