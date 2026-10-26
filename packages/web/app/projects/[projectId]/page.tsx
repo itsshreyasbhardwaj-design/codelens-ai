@@ -1,5 +1,6 @@
 import Link from 'next/link';
 import { notFound } from 'next/navigation';
+import { requireSession } from '../../lib/session.ts';
 import { Shell, TopBar, projectTabs } from '../../components/nav.tsx';
 import {
   Card, Caveat, ConfidencePill, EmptyState, Mono, PriorityPill, SectionHeading,
@@ -236,13 +237,14 @@ export default async function ProjectOverviewPage({ params }: { params: Promise<
 
   // The store raises the same result for another organisation's project as for
   // one that does not exist, so this reveals nothing about which it was.
-  const project = getProject(projectId);
+  const { organizationId } = await requireSession();
+  const project = getProject(organizationId, projectId);
   if (!project) notFound();
 
   const base = `/projects/${encodeURIComponent(projectId)}`;
   const tabs = projectTabs(projectId);
-  const scans = listScans(projectId);
-  const scan = latestScan(projectId);
+  const scans = listScans(organizationId, projectId);
+  const scan = latestScan(organizationId, projectId);
 
   if (!scan) {
     return (

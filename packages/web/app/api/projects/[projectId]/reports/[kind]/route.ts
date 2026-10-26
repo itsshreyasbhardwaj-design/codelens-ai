@@ -20,6 +20,7 @@ import {
   scanFeatures, scanFindings, scanFixPacks, scanModels, scanRelationships, scanRoutes,
   scanScores, scanStages, scanTech, type ScanRow,
 } from '../../../../../lib/store.ts';
+import { sessionOr401 } from '../../../../../lib/session.ts';
 
 /**
  * Report exports.
@@ -315,8 +316,8 @@ function annotateEnvGap(markdown: string): string {
 // ---------------------------------------------------------------- comparison --
 
 /** The two most recent scans that can be compared, newest first. */
-function comparableScans(projectId: string): ScanRow[] {
-  return listScans(projectId)
+function comparableScans(organizationId: string, projectId: string): ScanRow[] {
+  return listScans(organizationId, projectId)
     .filter((s) => (s.status === 'completed' || s.status === 'partial') && s.coverage !== undefined)
     .slice(0, 2);
 }
@@ -348,11 +349,17 @@ export async function GET(_request: Request, { params }: { params: Promise<{ pro
     );
   }
 
-  const project = getProject(projectId);
+  const session = await sessionOr401();
+  if (!session) {
+    return NextResponse.json({ error: 'authentication required' }, { status: 401 });
+  }
+  const { organizationId } = session;
+
+  const project = getProject(organizationId, projectId);
   if (!project) {
     return NextResponse.json({ error: `no project '${projectId}' in this organisation` }, { status: 404 });
   }
-  const scan = latestScan(projectId);
+  const scan = latestScan(organizationId, projectId);
   if (!scan) {
     return NextResponse.json({ error: `project '${projectId}' has no scan to export` }, { status: 409 });
   }
@@ -361,12 +368,12 @@ export async function GET(_request: Request, { params }: { params: Promise<{ pro
 
   // --- the comparison export is built from two scans, not one ---
   if (kind === 'comparison-json') {
-    const [head, base] = comparableScans(projectId);
+    const [head, base] = comparableScans(organizationId, projectId);
     if (!head || !base) {
       return NextResponse.json(
         {
           error: 'a comparison needs two comparable scans of this project',
-          detail: `found ${comparableScans(projectId).length} scan(s) with recorded coverage; `
+          detail: `found ${comparableScans(organizationId, projectId).length} scan(s) with recorded coverage; `
             + 'a scan without coverage cannot be compared because absences could not be judged against it',
         },
         { status: 409 },

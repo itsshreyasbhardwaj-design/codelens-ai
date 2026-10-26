@@ -78,8 +78,12 @@ A scan writes to `./codelens-report/`:
 ### Web interface
 
 ```bash
-pnpm dev     # http://localhost:3100
+CODELENS_SECRET_KEY=$(openssl rand -hex 32) pnpm dev   # http://localhost:3100
 ```
+
+Create an account at `/sign-in`. Projects, scans and findings belong to the
+account that created them; the app refuses to issue sessions without a secret
+key rather than signing them weakly.
 
 Dashboard, project overview with the health scorecard and coverage panel,
 interactive architecture explorer, findings explorer with full evidence

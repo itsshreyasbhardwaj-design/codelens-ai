@@ -25,7 +25,7 @@ deterministic analysis only. See `.env.example`.
 | `CODELENS_AI_TOKEN_BUDGET` | `120000` | hard ceiling; the stage aborts rather than exceed it |
 | `CODELENS_AI_ACCEPT_EXTERNAL_TRANSFER` | unset | required before `anthropic`/`openai` will run |
 | `CODELENS_OLLAMA_URL` | `http://127.0.0.1:11434` | local model endpoint |
-| `CODELENS_SECRET_KEY` | unset | 32+ chars. Required to store provider tokens at all |
+| `CODELENS_SECRET_KEY` | unset | 32+ chars. **Required by the web app** to sign sessions, and to store provider tokens at all |
 | `CODELENS_DB` | `.codelens/codelens.db` | database path |
 | `CODELENS_RETENTION_DAYS` | `30` | artifact retention |
 | `GITHUB_TOKEN` | unset | read-only token for private repositories |
@@ -36,10 +36,11 @@ deterministic analysis only. See `.env.example`.
 CodeLens processes other people's source code. If you host it for anyone but
 yourself, these are not optional:
 
-1. **Implement authentication first.** This release has none (`docs/STATUS.md`).
-   Tenant isolation is enforced in the data layer, but without identity there is
-   nothing to isolate.
-2. **Set `CODELENS_SECRET_KEY`** to a 32+ character secret from a secrets
+1. **Set `CODELENS_SECRET_KEY`** to a 32+ character secret. The web app refuses
+   to issue sessions without it, so this is not optional.
+2. **Put a rate limiter in front of `/api/auth/login`.** There is none built in,
+   and the product's own security analyzer reports that as a finding.
+3. **Set `CODELENS_SECRET_KEY`** to a 32+ character secret from a secrets
    manager, or provider token storage will refuse to operate.
 3. **Keep dynamic verification off.** It is off by default and refuses project
    build scripts. Do not enable it without real container isolation.

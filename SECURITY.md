@@ -24,9 +24,25 @@ CodeLens processes source code, which is frequently sensitive.
   and refuses project dependency-installation and build scripts, because this
   host offers no container isolation.
 
+## Authentication
+
+Accounts use scrypt password verifiers and HMAC-signed session cookies. Every
+request re-verifies the cookie and re-checks organisation membership against the
+database, so removing someone from an organisation revokes their access
+immediately rather than when their token expires. A wrong password and an
+unknown account produce identical responses.
+
+**Set `CODELENS_SECRET_KEY` (32+ characters) before exposing this to anyone.**
+Without it the application refuses to issue sessions rather than signing them
+with a weak key.
+
 ## Before hosting this for other people
 
-**Authentication is not implemented.** The schema models users, organisations
-and roles, and the data layer enforces tenant scoping, but there is no sign-in.
-This release is single-tenant and local. See `docs/STATUS.md` and
-`docs/RUNBOOK.md`.
+- Sessions are stateless signed tokens. A single session cannot be revoked
+  server-side; rotating `CODELENS_SECRET_KEY` signs everyone out. Add a sessions
+  table if per-session revocation matters to you.
+- There is no rate limiting on the sign-in route. Put one in front of it.
+- There is no email verification, password reset, or multi-factor authentication.
+- An organisation currently has exactly one member: the account that created it.
+
+See `docs/STATUS.md` for the full list.

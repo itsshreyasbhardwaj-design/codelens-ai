@@ -16,6 +16,7 @@ import {
   type FixPackRow,
 } from '../../../lib/store.ts';
 import { Studio, type StudioPack, type StudioPrerequisite } from './studio.tsx';
+import { currentSession, requireSession } from '../../../lib/session.ts';
 
 /**
  * Fix Studio, server half.
@@ -41,7 +42,8 @@ function first(value: string | string[] | undefined): string | undefined {
 
 export async function generateMetadata({ params }: PageParams): Promise<Metadata> {
   const { projectId } = await params;
-  const project = getProject(projectId);
+  const session = await currentSession();
+  const project = session ? getProject(session.organizationId, projectId) : undefined;
   return {
     title: project ? `Fix Studio — ${project.name} — CodeLens AI` : 'Fix Studio — CodeLens AI',
   };
@@ -63,7 +65,13 @@ async function setPackApplied(
 ): Promise<{ ok: boolean; message?: string }> {
   'use server';
 
-  if (!getProject(projectId)) {
+  // A server action is reachable directly, so it re-establishes the session
+  // itself. The page having rendered the button is not authorisation.
+  const session = await currentSession();
+  if (!session) {
+    return { ok: false, message: 'Your session has expired. Sign in again.' };
+  }
+  if (!getProject(session.organizationId, projectId)) {
     return { ok: false, message: 'That project no longer exists.' };
   }
   // store.ts exposes no "which project owns this pack" query, so the ownership
@@ -182,7 +190,8 @@ function toStudioPack(pack: FixPackRow, byDisplayId: Map<string, FindingRow>, pa
 export default async function FixStudioPage({ params, searchParams }: PageParams) {
   const { projectId } = await params;
   const query = await searchParams;
-  const project = getProject(projectId);
+  const { organizationId } = await requireSession();
+  const project = getProject(organizationId, projectId);
   const tabs = projectTabs(projectId);
   const current = `/projects/${encodeURIComponent(projectId)}/fix-studio`;
 
@@ -205,9 +214,9 @@ export default async function FixStudioPage({ params, searchParams }: PageParams
     );
   }
 
-  const scans = listScans(projectId);
+  const scans = listScans(organizationId, projectId);
   const requestedScanId = first(query.scan);
-  const scan = requestedScanId ? scans.find((s) => s.id === requestedScanId) : latestScan(projectId);
+  const scan = requestedScanId ? scans.find((s) => s.id === requestedScanId) : latestScan(organizationId, projectId);
 
   const header = (
     <header style={{ display: 'grid', gap: '0.4rem' }}>

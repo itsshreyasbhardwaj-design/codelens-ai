@@ -53,12 +53,21 @@ function routeIsStateChanging(r: ApiEndpoint): boolean {
   return ['POST', 'PUT', 'PATCH', 'DELETE'].includes(r.method);
 }
 
+/**
+ * A route handler's body, with comments removed.
+ *
+ * Comments are stripped because every rule below matches on this text, and a
+ * comment that *describes* a problem reads exactly like the problem. That has
+ * produced three separate false positives during development, the last one on
+ * this project's own login handler: a comment explaining why the response is
+ * deliberately uniform was read as evidence that it is not.
+ */
 function handlerSymbolText(map: RepoMap, r: ApiEndpoint): string {
   const mod = map.modules.get(r.file);
   if (!mod) return '';
   const sym = mod.symbols.find((s) => s.name === r.handlerSymbol)
     ?? mod.symbols.find((s) => r.line !== undefined && s.startLine <= r.line && s.endLine >= r.line);
-  return sym?.text ?? '';
+  return codeText(sym?.text ?? '', mod.language);
 }
 
 export const securityAnalyzer: Analyzer = {

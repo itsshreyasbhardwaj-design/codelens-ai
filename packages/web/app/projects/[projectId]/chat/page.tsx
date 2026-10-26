@@ -8,6 +8,7 @@ import {
   scanRoutes,
 } from '../../../lib/store.ts';
 import { ChatPanel, type SuggestedQuestion } from './chat-panel.tsx';
+import { requireSession } from '../../../lib/session.ts';
 
 /**
  * The question surface.
@@ -42,7 +43,8 @@ const SUGGESTED: SuggestedQuestion[] = [
 
 export default async function ChatPage({ params }: { params: Promise<{ projectId: string }> }) {
   const { projectId } = await params;
-  const project = getProject(projectId);
+  const { organizationId } = await requireSession();
+  const project = getProject(organizationId, projectId);
   const base = `/projects/${encodeURIComponent(projectId)}`;
 
   if (!project) {
@@ -62,7 +64,7 @@ export default async function ChatPage({ params }: { params: Promise<{ projectId
     );
   }
 
-  const scan = latestScan(projectId);
+  const scan = latestScan(organizationId, projectId);
   const tabs = projectTabs(projectId);
 
   if (!scan) {
@@ -91,7 +93,7 @@ export default async function ChatPage({ params }: { params: Promise<{ projectId
   const features = scanFeatures(scan.id);
   const components = scanComponents(scan.id);
   const evidenceCount = findings.reduce((n, f) => n + f.evidence.length, 0);
-  const scanCount = listScans(projectId).length;
+  const scanCount = listScans(organizationId, projectId).length;
   const scanLabel = `scan ${scan.id.slice(0, 12)}… (${formatRelative(scan.queuedAt)})`;
 
   return (

@@ -14,6 +14,7 @@ import {
 import { ArchitectureExplorer, type FindingLink, type GraphEdge, type GraphNode } from './explorer.tsx';
 import { ApiSurface } from './api-surface.tsx';
 import { DataModels } from './data-models.tsx';
+import { requireSession } from '../../../lib/session.ts';
 
 /**
  * Architecture explorer — server surface.
@@ -36,7 +37,8 @@ export const metadata = { title: 'Architecture — CodeLens AI' };
 
 export default async function ArchitecturePage({ params }: { params: Promise<{ projectId: string }> }) {
   const { projectId } = await params;
-  const project = getProject(projectId);
+  const { organizationId } = await requireSession();
+  const project = getProject(organizationId, projectId);
 
   if (!project) {
     return (
@@ -59,7 +61,7 @@ export default async function ArchitecturePage({ params }: { params: Promise<{ p
 
   const tabs = projectTabs(project.id);
   const current = `/projects/${encodeURIComponent(project.id)}/architecture`;
-  const scan = latestScan(project.id);
+  const scan = latestScan(organizationId, project.id);
 
   if (!scan) {
     return (

@@ -1,4 +1,5 @@
 import { getProject, latestScan, listScans, scanFixPacks } from '../../../../../lib/store.ts';
+import { sessionOr401 } from '../../../../../lib/session.ts';
 
 /**
  * Fix Pack markdown download.
@@ -53,7 +54,13 @@ export async function GET(
   }
   const format: AgentFormat = requested === null ? DEFAULT_FORMAT : requested;
 
-  if (!getProject(projectId)) {
+  const session = await sessionOr401();
+  if (!session) return text('Authentication required.', 401);
+  const { organizationId } = session;
+
+  // getProject is organisation-scoped, so another tenant's project is reported
+  // as absent rather than as forbidden: existence is not disclosed.
+  if (!getProject(organizationId, projectId)) {
     return text(`No project '${projectId}'.`, 404);
   }
 
@@ -61,10 +68,10 @@ export async function GET(
   let scanId: string | undefined;
   try {
     if (requestedScan) {
-      scanId = listScans(projectId).find((s) => s.id === requestedScan)?.id;
+      scanId = listScans(organizationId, projectId).find((s) => s.id === requestedScan)?.id;
       if (!scanId) return text(`Scan '${requestedScan}' is not part of project '${projectId}'.`, 404);
     } else {
-      scanId = latestScan(projectId)?.id;
+      scanId = latestScan(organizationId, projectId)?.id;
       if (!scanId) return text(`Project '${projectId}' has no scans.`, 404);
     }
   } catch {

@@ -95,25 +95,38 @@ evidence, occurrence history, scores, Fix Packs with their prompts, usage
 metering, and audit entries all round-trip. Tenant isolation returns the same
 error for another organisation's project as for a missing one.
 
+**Authentication and tenant isolation.** Registration and sign-in with scrypt
+password verifiers (N=32768) and HMAC-signed session cookies, built on
+`node:crypto` with no dependency. Verified at runtime, not just in tests:
+unauthenticated requests to `/dashboard` redirect to sign-in, unauthenticated
+API requests get 401, a forged cookie is rejected, a duplicate email is refused
+case-insensitively, and a wrong password and an unknown account return
+byte-identical responses so accounts cannot be enumerated. Every store query
+that reaches project data is organisation-scoped, and membership is re-checked
+from the database on each request so removing a member revokes access
+immediately rather than at token expiry.
+
 **CLI.** `scan`, `eval`, `list`, `compare`. Reports in Markdown, JSON and
-printable HTML.
+printable HTML. The CLI is single-user by nature and uses a fixed local
+organisation.
 
 **Web interface.** Landing page, dashboard with live stage-by-stage scan
 progress, project overview with scorecard and coverage panel, architecture
 explorer, findings explorer with full evidence inspection, Fix Studio, a
 repository-aware question surface, and report exports.
 
-**122 automated tests**, zero runtime test dependencies: Node's built-in test
+**143 automated tests**, zero runtime test dependencies: Node's built-in test
 runner and native TypeScript.
 
 ## Not implemented
 
 Stated plainly rather than stubbed.
 
-- **Authentication and multi-user access.** The schema models users,
-  organisations, members and roles, and the data layer enforces tenant scoping,
-  but there is no sign-in, no session, and no password handling. This release is
-  single-tenant and local. **Do not host it for other people as it stands.**
+- **Team invitations, roles beyond owner, and agency workspaces.**
+  Authentication exists (below), and every account gets its own organisation,
+  but there is no invite flow, no role management UI, and no way to add a second
+  member to an organisation. The schema and the role column support it; the
+  product surface does not.
 - **Dynamic verification (Layer D).** Off by default, and it refuses project
   dependency installation and build scripts when enabled. Those are arbitrary
   code execution and this host has no container isolation. This is ADR-005: the
@@ -167,6 +180,21 @@ Not covered by automation:
   executed against a live endpoint, because that spends money. The `ollama`
   path and the `none` default are exercised.
 
+## What the second self-audit found
+
+Running CodeLens on the newly written authentication code surfaced three
+findings. One was a true positive — `CODELENS_SECRET_KEY` was read but missing
+from `.env.example`, now fixed. One was a **false positive worth more than the
+finding**: the account-enumeration rule matched a *comment* explaining why the
+login response is deliberately uniform. That was the third false positive of the
+same shape, so the fix went into `handlerSymbolText`, which every security rule
+draws its text from, rather than into the one rule.
+
+The third stands and is not fixed: the authentication routes have no automated
+test. The logic beneath them has 19, and the routes were verified by hand
+against a running server, but there is no test that would catch a regression in
+the route glue itself. It is reported here rather than argued away.
+
 ## Known false positive, found by self-audit
 
 Running CodeLens on CodeLens surfaced 111 findings. Ten reached P0; eight are in
@@ -219,9 +247,12 @@ false positives has no standing to ask anyone to trust its findings.
 
 In the order I would do them:
 
-1. **Authentication**, before any hosted deployment. The isolation mechanism
-   exists; the identity layer that makes it meaningful does not.
-2. **A second and third ground-truth fixture** in different ecosystems — a
+1. **A test for the authentication routes**, which this project's own audit
+   reports as a critical gap and which is the one place "verified by hand" is
+   weakest.
+2. **Team invitations and roles**, so an organisation can have more than the
+   account that created it.
+3. **A second and third ground-truth fixture** in different ecosystems — a
    Django/Postgres project and a Go service — to turn recall from a regression
    guard into a real accuracy measurement.
 3. **Container-isolated dynamic verification**, which would unlock honest

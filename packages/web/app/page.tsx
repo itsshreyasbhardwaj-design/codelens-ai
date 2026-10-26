@@ -7,8 +7,7 @@ import {
 } from './components/ui.tsx';
 import { CATEGORY_LABEL, formatRelative, pluralize, SEVERITY_ORDER } from './lib/format.ts';
 import {
-  getProject, latestScan, scanFindings, scanFixPacks, scanStages,
-} from './lib/store.ts';
+  getProject, latestScan, scanFindings, scanFixPacks, scanStages, LOCAL_ORG } from './lib/store.ts';
 
 /**
  * The landing page.
@@ -138,8 +137,10 @@ function modules() {
 // ------------------------------------------------------------ demo preview --
 
 function DemoPreview() {
-  const project = getProject(DEMO_PROJECT_ID);
-  const scan = project ? latestScan(project.id) : undefined;
+  // The landing page is public, so there is no session here. The demonstration
+  // project is the one the CLI seeds, which lives in the local organisation.
+  const project = getProject(LOCAL_ORG, DEMO_PROJECT_ID);
+  const scan = project ? latestScan(LOCAL_ORG, project.id) : undefined;
 
   const synthetic = (
     <Tag tone="warn">Synthetic demonstration data</Tag>

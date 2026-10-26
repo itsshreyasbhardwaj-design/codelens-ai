@@ -16,6 +16,7 @@ import {
 import type {
   AnswerBlock, ChatAnswer, Citation, FindingRef,
 } from '../../../../projects/[projectId]/chat/chat-panel.tsx';
+import { sessionOr401 } from '../../../../lib/session.ts';
 
 /**
  * Repository-aware question answering.
@@ -279,6 +280,7 @@ function coverageCaveats(scan: ScanRow): string[] {
 // --------------------------------------------------------- answer assembly --
 
 interface Ctx {
+  organizationId: string;
   projectId: string;
   projectName: string;
   scan: ScanRow;
@@ -801,7 +803,7 @@ function fixFirstAnswer(ctx: Ctx): { summary: string; blocks: AnswerBlock[]; cav
 }
 
 function scanDiffAnswer(ctx: Ctx): { summary: string; blocks: AnswerBlock[]; caveats: string[] } {
-  const scans = listScans(ctx.projectId).filter((s) => s.status === 'completed' || s.status === 'partial');
+  const scans = listScans(ctx.organizationId, ctx.projectId).filter((s) => s.status === 'completed' || s.status === 'partial');
   if (scans.length < 2) {
     return {
       summary:
@@ -840,7 +842,8 @@ function scanDiffAnswer(ctx: Ctx): { summary: string; blocks: AnswerBlock[]; cav
       rows: [
         ['Verified resolved', String(cmp.resolved.length), 'Gone, and the newer scan covered the same ground'],
         ['Unverified absence', String(cmp.unverifiedAbsences.length), 'No longer reported, NOT confirmed fixed'],
-        ['Still present', String(cmp.persistent.length), 'Reported by both scans'],
+        ['Still present', String(cmp.persistent.length), 'Reported by both scans, unchanged'],
+        ['Edited, still reported', String(cmp.relocated.length), 'Same rule and file, new fingerprint: the edit did not fix it'],
         ['Newly reported', String(cmp.introduced.length), 'Only in the newer scan'],
         ['Regressed', String(cmp.regressed.length), 'Resolved earlier, present again'],
         ['Severity changed', String(cmp.severityChanges.length), 'Same finding, different severity'],
@@ -853,6 +856,16 @@ function scanDiffAnswer(ctx: Ctx): { summary: string; blocks: AnswerBlock[]; cav
       heading: `Unverified absences (${cmp.unverifiedAbsences.length}) — do not count these as progress`,
       text: 'These findings are no longer reported, but the newer scan did not cover the same ground, so their absence cannot be attributed to a fix.',
       bullets: cmp.unverifiedAbsences.slice(0, 10).map((c) => `${c.title} (${c.severity}) — ${c.caveat ?? 'coverage changed'}`),
+    });
+  }
+
+  if (cmp.relocated.length > 0) {
+    blocks.push({
+      heading: `Edited but still reported (${cmp.relocated.length})`,
+      text:
+        'The code around each of these changed, so the finding has a new identity, but the same rule '
+        + 'still fires on the same file. Counting them as repairs would report progress that did not happen.',
+      bullets: cmp.relocated.slice(0, 10).map((c) => `${c.title} (${c.severity})`),
     });
   }
 
@@ -1079,11 +1092,17 @@ export async function POST(request: Request, { params }: { params: Promise<{ pro
     return NextResponse.json({ error: 'the question is too long; 600 characters is the limit' }, { status: 400 });
   }
 
-  const project = getProject(projectId);
+  const session = await sessionOr401();
+  if (!session) {
+    return NextResponse.json({ error: 'authentication required' }, { status: 401 });
+  }
+  const { organizationId } = session;
+
+  const project = getProject(organizationId, projectId);
   if (!project) {
     return NextResponse.json({ error: `no project '${projectId}' in this organisation` }, { status: 404 });
   }
-  const scan = latestScan(projectId);
+  const scan = latestScan(organizationId, projectId);
   if (!scan) {
     return NextResponse.json({ error: `project '${projectId}' has no scan to answer from` }, { status: 409 });
   }
@@ -1112,7 +1131,7 @@ export async function POST(request: Request, { params }: { params: Promise<{ pro
     return NextResponse.json(unmatched);
   }
 
-  const built = BUILDERS[intent.id]!({ projectId, projectName: project.name, scan });
+  const built = BUILDERS[intent.id]!({ organizationId, projectId, projectName: project.name, scan });
 
   const answer: ChatAnswer = {
     question,

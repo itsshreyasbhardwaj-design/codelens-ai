@@ -20,6 +20,7 @@ import { Shell, TopBar, projectTabs } from '../../../components/nav.tsx';
 import { EMPTY_FILTERS, FindingsExplorer } from './explorer.tsx';
 import type { Filters, GroupKey } from './explorer.tsx';
 import type { Finding } from './finding-detail.tsx';
+import { requireSession } from '../../../lib/session.ts';
 
 /**
  * Findings explorer, server side.
@@ -120,7 +121,8 @@ export default async function FindingsPage({ params, searchParams }: {
   const { projectId } = await params;
   const query = await searchParams;
 
-  const project = getProject(projectId);
+  const { organizationId } = await requireSession();
+  const project = getProject(organizationId, projectId);
   if (!project) {
     return (
       <PageFrame projectId={projectId}>
@@ -135,7 +137,7 @@ export default async function FindingsPage({ params, searchParams }: {
     );
   }
 
-  const scans = listScans(projectId);
+  const scans = listScans(organizationId, projectId);
   if (scans.length === 0) {
     return (
       <PageFrame projectId={projectId}>

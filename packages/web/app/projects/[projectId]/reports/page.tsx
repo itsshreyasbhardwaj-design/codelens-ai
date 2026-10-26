@@ -9,6 +9,7 @@ import { formatRelative, pluralize } from '../../../lib/format.ts';
 import {
   db, getProject, latestScan, listScans, scanFindings, scanFixPacks, type ScanRow,
 } from '../../../lib/store.ts';
+import { requireSession } from '../../../lib/session.ts';
 
 /**
  * Exports.
@@ -232,7 +233,12 @@ function ComparisonBlock({ projectId, base, head, comparison }: {
           gridTemplateColumns: 'repeat(auto-fit, minmax(7rem, 1fr))',
         }}
       >
-        <Stat label="Still present" value={comparison.persistent.length} hint="Reported by both scans" />
+        <Stat label="Still present" value={comparison.persistent.length} hint="Reported by both scans, unchanged" />
+        <Stat
+          label="Edited, still reported"
+          value={comparison.relocated.length}
+          hint="Same rule, same file, new fingerprint: the edit did not remove the problem"
+        />
         <Stat label="Newly reported" value={comparison.introduced.length} hint="Only in the newer scan" />
         <Stat
           label="Regressed"
@@ -242,6 +248,14 @@ function ComparisonBlock({ projectId, base, head, comparison }: {
         />
         <Stat label="Severity changed" value={comparison.severityChanges.length} hint="Same finding, different severity" />
       </div>
+      {comparison.relocated.length > 0 ? (
+        <p style={{ margin: '0.75rem 0 0', fontSize: '0.86rem', color: 'var(--ink-2)', lineHeight: 1.55 }}>
+          {comparison.persistent.length + comparison.relocated.length} finding(s) are still reported in
+          total. {comparison.relocated.length} of them sit in code that was edited since the earlier
+          scan: the fingerprint changed, so they are not the same record, but the same rule still fires
+          on the same file. They are counted as present rather than resolved.
+        </p>
+      ) : null}
 
       {comparison.unverifiedAbsences.length > 0 ? (
         <section style={{ marginTop: '1.25rem' }}>
@@ -257,6 +271,28 @@ function ComparisonBlock({ projectId, base, head, comparison }: {
                 <Td>{c.title}</Td>
                 <Td nowrap><SeverityPill severity={c.severity} /></Td>
                 <Td>{c.caveat ?? 'Coverage changed between the two scans.'}</Td>
+              </tr>
+            ))}
+          </Table>
+        </section>
+      ) : null}
+
+      {comparison.relocated.length > 0 ? (
+        <section style={{ marginTop: '1.25rem' }}>
+          <h3 style={{ fontSize: '0.95rem', fontWeight: 650, margin: '0 0 0.5rem' }}>
+            Edited but still reported ({comparison.relocated.length})
+          </h3>
+          <p style={{ margin: '0 0 0.5rem', fontSize: '0.86rem', color: 'var(--ink-3)', lineHeight: 1.55 }}>
+            The code around each of these changed, so the finding has a new identity, but the same
+            rule still fires on the same file. Treating these as repairs would report progress that
+            did not happen.
+          </p>
+          <Table head={['Finding', 'Severity', 'Category']} caption="Findings whose code was edited while the problem remained">
+            {comparison.relocated.map((c) => (
+              <tr key={c.fingerprint}>
+                <Td>{c.title}</Td>
+                <Td nowrap><SeverityPill severity={c.severity} /></Td>
+                <Td>{c.category}</Td>
               </tr>
             ))}
           </Table>
@@ -331,7 +367,8 @@ function ComparisonBlock({ projectId, base, head, comparison }: {
 
 export default async function ReportsPage({ params }: { params: Promise<{ projectId: string }> }) {
   const { projectId } = await params;
-  const project = getProject(projectId);
+  const { organizationId } = await requireSession();
+  const project = getProject(organizationId, projectId);
   const base = `/projects/${encodeURIComponent(projectId)}`;
 
   if (!project) {
@@ -352,7 +389,7 @@ export default async function ReportsPage({ params }: { params: Promise<{ projec
   }
 
   const tabs = projectTabs(projectId);
-  const scan = latestScan(projectId);
+  const scan = latestScan(organizationId, projectId);
 
   if (!scan) {
     return (
@@ -376,7 +413,7 @@ export default async function ReportsPage({ params }: { params: Promise<{ projec
 
   // Two scans with recorded coverage are needed: an absence cannot be judged
   // against coverage that was never written down.
-  const comparable = listScans(projectId)
+  const comparable = listScans(organizationId, projectId)
     .filter((s) => (s.status === 'completed' || s.status === 'partial') && s.coverage !== undefined);
   const head = comparable[0];
   const baseScan = comparable[1];

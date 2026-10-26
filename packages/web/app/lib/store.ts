@@ -15,6 +15,11 @@ import { Db } from '@codelens/engine/db/index.ts';
  * rather than faked — see docs/LIMITATIONS.md.
  */
 
+/**
+ * The organisation used by the CLI, which is single-user by nature. The web
+ * application never uses it: there, the organisation comes from the signed
+ * session, so one account cannot read another's projects.
+ */
 export const LOCAL_ORG = 'local';
 
 /**
@@ -82,7 +87,7 @@ export interface ProjectRow {
   latestScore: number | null;
 }
 
-export function listProjects(): ProjectRow[] {
+export function listProjects(organizationId: string): ProjectRow[] {
   const rows = db().all<Record<string, unknown>>(
     `SELECT p.id, p.name, p.kind, p.created_at,
             (SELECT COUNT(*) FROM scan_jobs s WHERE s.project_id = p.id) AS scan_count,
@@ -92,7 +97,7 @@ export function listProjects(): ProjectRow[] {
        FROM projects p
       WHERE p.organization_id = ? AND p.deleted_at IS NULL
       ORDER BY latest_at DESC NULLS LAST, p.name`,
-    LOCAL_ORG,
+    organizationId,
   );
 
   return rows.map((r) => {
@@ -121,8 +126,8 @@ export function listProjects(): ProjectRow[] {
   });
 }
 
-export function getProject(projectId: string): ProjectRow | undefined {
-  return listProjects().find((p) => p.id === projectId);
+export function getProject(organizationId: string, projectId: string): ProjectRow | undefined {
+  return listProjects(organizationId).find((p) => p.id === projectId);
 }
 
 // ------------------------------------------------------------------- scans --
@@ -153,8 +158,10 @@ interface Coverage {
   skippedReasons: Record<string, number>;
 }
 
-export function listScans(projectId: string): ScanRow[] {
-  db().assertProjectInOrg(projectId, LOCAL_ORG);
+export function listScans(organizationId: string, projectId: string): ScanRow[] {
+  // Raises the same "not found" error for another organisation's project as for
+  // one that does not exist, so existence is not disclosed across tenants.
+  db().assertProjectInOrg(projectId, organizationId);
   const rows = db().all<Record<string, unknown>>(
     `SELECT s.id, s.project_id, s.status, s.queued_at, s.finished_at, s.ai_provider,
             s.coverage_json, s.error_message,
@@ -184,14 +191,14 @@ export function listScans(projectId: string): ScanRow[] {
   }));
 }
 
-export function getScan(scanId: string): ScanRow | undefined {
+export function getScan(organizationId: string, scanId: string): ScanRow | undefined {
   const row = db().get<{ project_id: string }>('SELECT project_id FROM scan_jobs WHERE id = ?', scanId);
   if (!row) return undefined;
-  return listScans(row.project_id).find((s) => s.id === scanId);
+  return listScans(organizationId, row.project_id).find((s) => s.id === scanId);
 }
 
-export function latestScan(projectId: string): ScanRow | undefined {
-  return listScans(projectId)[0];
+export function latestScan(organizationId: string, projectId: string): ScanRow | undefined {
+  return listScans(organizationId, projectId)[0];
 }
 
 export interface StageRow {

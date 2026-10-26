@@ -11,6 +11,7 @@ import {
   type ProjectRow, type ScanRow,
 } from '../lib/store.ts';
 import { listJobs } from '../lib/runner.ts';
+import { requireSession } from '../lib/session.ts';
 import { NewScan } from './new-scan.tsx';
 
 /**
@@ -103,9 +104,9 @@ function CoverageSummary({ scan }: { scan: ScanRow }) {
   );
 }
 
-function ProjectCard({ project, detailed }: { project: ProjectRow; detailed: boolean }) {
+function ProjectCard({ project, detailed, organizationId }: { project: ProjectRow; detailed: boolean; organizationId: string }) {
   const href = `/projects/${encodeURIComponent(project.id)}`;
-  const scan = project.latestScanId ? latestScan(project.id) : undefined;
+  const scan = project.latestScanId ? latestScan(organizationId, project.id) : undefined;
   const counts = scan ? severityCounts(scan.id) : {};
   const packs = scan ? scanFixPacks(scan.id) : [];
   const presentable = packs.filter((p) => p.validation.presentable).length;
@@ -273,8 +274,10 @@ function ProjectCard({ project, detailed }: { project: ProjectRow; detailed: boo
   );
 }
 
-export default function DashboardPage() {
-  const projects = listProjects();
+export default async function DashboardPage() {
+  // Redirects to /sign-in when there is no valid session.
+  const { organizationId } = await requireSession();
+  const projects = listProjects(organizationId);
   const jobs = listJobs();
   const inFlight = jobs.filter((j) => !j.finishedAt);
 
@@ -366,7 +369,7 @@ export default function DashboardPage() {
             <ul style={{ listStyle: 'none', margin: 0, padding: 0 }}>
               {projects.map((p, i) => (
                 <li key={p.id} style={{ marginBottom: i === projects.length - 1 ? 0 : '0.85rem' }}>
-                  <ProjectCard project={p} detailed={i === 0} />
+                  <ProjectCard project={p} detailed={i === 0} organizationId={organizationId} />
                 </li>
               ))}
             </ul>
