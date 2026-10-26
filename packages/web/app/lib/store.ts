@@ -293,7 +293,11 @@ export interface FindingRow {
   firstDetectedScanId?: string;
 }
 
+// Two plain constants rather than one with .replace() applied at the call
+// site: the aliased form is needed only in the join below, and a literal is
+// easier to read than a string rewritten at runtime.
 const PRIORITY_ORDER = "CASE priority WHEN 'P0' THEN 0 WHEN 'P1' THEN 1 WHEN 'P2' THEN 2 WHEN 'P3' THEN 3 ELSE 4 END";
+const PRIORITY_ORDER_D = "CASE d.priority WHEN 'P0' THEN 0 WHEN 'P1' THEN 1 WHEN 'P2' THEN 2 WHEN 'P3' THEN 3 ELSE 4 END";
 
 export function scanFindings(scanId: string): FindingRow[] {
   const rows = db().all<Record<string, unknown>>(
@@ -475,7 +479,7 @@ export function scanFixPacks(scanId: string): FixPackRow[] {
       `SELECT d.display_id FROM fix_pack_findings fp
          JOIN diagnostic_findings d ON d.id = fp.finding_id
         WHERE fp.fix_pack_id = ?
-        ORDER BY ${PRIORITY_ORDER.replace(/priority/g, 'd.priority')}, d.priority_score DESC`,
+        ORDER BY ${PRIORITY_ORDER_D}, d.priority_score DESC`,
       id,
     ).map((x) => x.display_id);
 

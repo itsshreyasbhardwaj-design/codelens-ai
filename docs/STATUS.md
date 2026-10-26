@@ -195,28 +195,31 @@ test. The logic beneath them has 19, and the routes were verified by hand
 against a running server, but there is no test that would catch a regression in
 the route glue itself. It is reported here rather than argued away.
 
-## Known false positive, found by self-audit
+## Self-audit false positives, found and fixed
 
-Running CodeLens on CodeLens surfaced 111 findings. Ten reached P0; eight are in
-`fixtures/vulnerable-shop/`, the deliberately defective demo project, and are
-correct. **Two are false positives in this repository's own code**, and they are
-the worst kind this product can produce — `critical` severity at `confirmed`
-confidence:
+Running CodeLens on CodeLens reported two `critical` / `confirmed` SQL injection
+findings in this repository's own `packages/web/app/lib/store.ts`. Both were
+false positives, and at that severity and confidence they are the most damaging
+error this product can make.
 
-- `security.injection.sql` at `packages/web/app/lib/store.ts:292` and `:467`.
+Both interpolated a module-scope `const` holding a literal SQL `ORDER BY`
+fragment. No request can influence such a value, and interpolating one is a
+common, safe pattern that would have fired on real codebases.
 
-Both interpolate `PRIORITY_ORDER`, a module-scope `const` holding a literal SQL
-`CASE` fragment, into an `ORDER BY`. No user input reaches either site; the bound
-values are passed as parameters. The rule flags any `${}` inside a query string
-without asking whether the interpolated expression is a compile-time constant.
+Fixed in both directions:
 
-Interpolating a constant ordering fragment is a common and safe pattern, so this
-will fire on real codebases. **The fix is in the rule, not the code**: resolve
-each interpolated expression, and suppress the finding when every one of them is
-an identifier bound to a module-scope string literal. It is not yet implemented.
+- **The rule** now resolves each `${...}` expression and suppresses the finding
+  only when *every* one is a bare identifier bound to a module-scope string
+  literal. It is deliberately strict — a call, a property access or a parameter
+  leaves the finding in place — so the failure mode is reporting, not silence.
+- **The code** dropped a `.replace()` applied to that constant at the call site
+  in favour of two plain constants, which the rule can prove and which reads
+  better anyway.
 
-Reported here rather than quietly silenced, because a tool that hides its own
-false positives has no standing to ask anyone to trust its findings.
+Verified afterwards: the fixture's genuine SQL injection is still detected,
+required-tier recall is still 100%, and the self-audit now reports **no P0
+findings in this project's own code** — the remaining eight are in
+`fixtures/vulnerable-shop`, where they belong.
 
 ## Known weaknesses
 

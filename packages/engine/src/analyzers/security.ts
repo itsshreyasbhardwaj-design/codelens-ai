@@ -266,6 +266,15 @@ function sqlInjection(ctx: AnalyzerContext): Finding[] {
       const inlineDangerous = (interpolated || concatenated) && looksLikeSql;
       if (!inlineDangerous && !sqlVar) continue;
 
+      // Interpolating a compile-time constant is not injection. An ORDER BY
+      // fragment held in a module-scope `const` is a common and safe pattern,
+      // and this project's own self-audit reported two of them as critical,
+      // confirmed SQL injection — the most damaging kind of false positive a
+      // scanner can produce. The finding stands only when at least one
+      // interpolated expression is something other than such a constant.
+      const interpolatedSource = sqlVar ? symbolTextAt(mod, sqlVar.line) : arg;
+      if (interpolatedSource && allInterpolationsAreConstants(mod, interpolatedSource)) continue;
+
       const evidenceLine = sqlVar?.line ?? call.line;
       const evidence: Evidence[] = [map.evidenceLine(mod.path, evidenceLine, 'untrusted value interpolated into query text')];
       if (sqlVar) evidence.push(map.evidenceLine(mod.path, call.line, `the built string is passed to ${call.callee}()`));
@@ -312,6 +321,55 @@ function sqlInjection(ctx: AnalyzerContext): Finding[] {
     }
   }
   return out;
+}
+
+
+/** Source text of the symbol declared at a line, for inspecting a built query. */
+function symbolTextAt(mod: ParsedModule, line: number): string | undefined {
+  return mod.symbols.find((sym) => sym.startLine === line)?.text
+    ?? mod.symbols.find((sym) => sym.startLine <= line && sym.endLine >= line)?.text;
+}
+
+/** The expressions inside `${...}` in a template literal, brace-matched. */
+function interpolatedExpressions(text: string): string[] {
+  const out: string[] = [];
+  for (let i = 0; i < text.length - 1; i++) {
+    if (text[i] !== '$' || text[i + 1] !== '{') continue;
+    let depth = 0;
+    for (let j = i + 1; j < text.length; j++) {
+      if (text[j] === '{') depth++;
+      else if (text[j] === '}') {
+        depth--;
+        if (depth === 0) { out.push(text.slice(i + 2, j).trim()); i = j; break; }
+      }
+    }
+  }
+  return out;
+}
+
+/**
+ * True when every interpolation is a reference to a module-scope constant bound
+ * to a plain string literal — a value fixed at author time that no request can
+ * influence.
+ *
+ * Deliberately strict: a bare identifier only, resolving to a `const` whose own
+ * initialiser is a literal with no interpolation of its own. Anything it cannot
+ * prove constant — a call, a property access, a parameter — leaves the finding
+ * in place, so the failure mode is reporting rather than silence.
+ */
+function allInterpolationsAreConstants(mod: ParsedModule, text: string): boolean {
+  const expressions = interpolatedExpressions(text);
+  if (expressions.length === 0) return false;
+
+  return expressions.every((expr) => {
+    if (!/^[A-Za-z_$][\w$]*$/.test(expr)) return false;
+    const decl = mod.symbols.find((sym) => sym.name === expr && sym.kind === 'const');
+    if (!decl) return false;
+    // Its initialiser must itself be a literal string, not another template.
+    const initialiser = decl.text.slice(decl.text.indexOf('=') + 1).trim();
+    if (!/^['"]/.test(initialiser)) return false;
+    return !initialiser.includes('${');
+  });
 }
 
 /** A nearby variable holding interpolated SQL that is then passed to the call. */
