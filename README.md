@@ -61,8 +61,8 @@ pnpm scan ./fixtures/vulnerable-shop --name "Vulnerable Shop"
 pnpm eval
 
 # Stored scans, and a comparison between two of them
-node --experimental-strip-types packages/cli/src/bin.ts list
-node --experimental-strip-types packages/cli/src/bin.ts compare <baseScanId> <headScanId>
+pnpm codelens list
+pnpm codelens compare <baseScanId> <headScanId>
 ```
 
 A scan writes to `./codelens-report/`:

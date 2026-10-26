@@ -5,6 +5,7 @@
 ```bash
 pnpm install          # Node 24+ and pnpm. No other prerequisite.
 pnpm scan <path>      # scan a local project
+pnpm codelens --help  # list, compare, eval
 pnpm dev              # web interface on http://localhost:3100
 pnpm verify           # type check and tests
 pnpm eval             # diagnostic accuracy against the bundled fixture
