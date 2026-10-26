@@ -722,3 +722,58 @@ describe('a slot is reused only by a project that holds one', () => {
     assert.equal(holdsProjectSlot(db, org, 'theirs'), false);
   });
 });
+
+describe('the monthly allowance survives a month rollover', () => {
+  it('grants the new month without any scan or payment happening', (t) => {
+    const { db, org } = setup();
+    t.after(() => db.close());
+    const free = planByCode(db, 'free')!;
+
+    // October: registration granted the allowance, and it was spent.
+    grantMonthlyAllowance(db, org, '2026-10-05T00:00:00.000Z');
+    assert.equal(balance(db, org), free.monthlyCredits);
+    // Spent through the real path: `grant` refuses a negative amount.
+    const held = reserve(db, org, free.monthlyCredits, { idempotencyKey: 'spend-oct' });
+    settle(db, held.id, free.monthlyCredits);
+    assert.equal(balance(db, org), 0);
+
+    // November, and the customer has not scanned yet — they open Billing. The
+    // page must not show zero next to "top up": they already qualify.
+    assert.equal(grantMonthlyAllowance(db, org, '2026-11-01T09:00:00.000Z'), free.monthlyCredits);
+    assert.equal(balance(db, org), free.monthlyCredits);
+  });
+
+  it('does not grant again when the page is refreshed', (t) => {
+    const { db, org } = setup();
+    t.after(() => db.close());
+    const free = planByCode(db, 'free')!;
+    for (let i = 0; i < 5; i++) grantMonthlyAllowance(db, org, '2026-11-01T09:00:00.000Z');
+    assert.equal(balance(db, org), free.monthlyCredits, 'a refresh must not grant twice');
+  });
+
+  it('is a no-op for a plan with no monthly allowance', (t) => {
+    const { db, org } = setup();
+    t.after(() => db.close());
+    // Enterprise has monthlyCredits 0; `grant` would throw on a non-positive
+    // amount, which on a page render would be a 500 rather than a caveat.
+    db.run("UPDATE organizations SET plan_code = 'enterprise' WHERE id = ?", org);
+    assert.equal(grantMonthlyAllowance(db, org, '2026-11-01T09:00:00.000Z'), 0);
+    assert.equal(balance(db, org), 0);
+  });
+
+  it('raises the catalogue error rather than granting blindly', (t) => {
+    // The billing page catches this to explain that seedPlans has not run. The
+    // grant is inside that try for exactly this reason: it resolves the plan
+    // too, so it must fail the same way rather than crashing the page.
+    const prior = process.env.CODELENS_SECRET_KEY;
+    process.env.CODELENS_SECRET_KEY = KEY;
+    const db = new Db(':memory:');
+    db.migrate();
+    const account = register(db, { email: `r${Math.random()}@example.com`, password: 'a-good-password' });
+    if (prior === undefined) delete process.env.CODELENS_SECRET_KEY;
+    else process.env.CODELENS_SECRET_KEY = prior;
+    t.after(() => db.close());
+
+    assert.throws(() => grantMonthlyAllowance(db, account.organizationId, '2026-11-01T09:00:00.000Z'), /seedPlans/);
+  });
+});

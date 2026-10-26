@@ -1,5 +1,5 @@
 import Link from 'next/link';
-import { ledger, type LedgerEntry } from '@codelens/engine/billing/credits.ts';
+import { grantMonthlyAllowance, ledger, type LedgerEntry } from '@codelens/engine/billing/credits.ts';
 import { usageSummary, type UsageSummary } from '@codelens/engine/billing/entitlements.ts';
 import { loadPaymentProvider } from '@codelens/engine/billing/payments.ts';
 import { DEFAULT_PRODUCTS, listPlans, type PlanRow } from '@codelens/engine/billing/plans.ts';
@@ -254,7 +254,25 @@ export default async function BillingPage({
    */
   let summary: UsageSummary;
   try {
-    summary = usageSummary(db(), organizationId, new Date().toISOString());
+    const atIso = new Date().toISOString();
+    /*
+     * Take the month's allowance before reading anything.
+     *
+     * The grant paths are registration, starting a scan, and the subscription
+     * webhook — opening this page is none of them. So an account that spent
+     * October's credits and opened Billing on the 1st of November saw a zero
+     * balance and "the AI layer is unavailable until this is topped up" next to
+     * the purchase buttons, while submitting a scan would have granted the
+     * credits immediately. That prompts someone to buy what they already have.
+     *
+     * Idempotent on (organisation, plan, month), so a refresh cannot grant
+     * twice, and it returns early for a plan with no monthly allowance. It sits
+     * INSIDE this try because it resolves the plan too: on an unseeded
+     * catalogue it raises the same error, and that must still render the
+     * explanation below rather than failing the page.
+     */
+    grantMonthlyAllowance(db(), organizationId, atIso);
+    summary = usageSummary(db(), organizationId, atIso);
   } catch (e) {
     return (
       <>

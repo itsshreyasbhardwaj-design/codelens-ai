@@ -141,7 +141,7 @@ provider configured the app says so and leaves every account on the free plan;
 with Stripe selected but no webhook secret it **refuses to run billing at all**,
 because entitlements would otherwise rest on an unverified request.
 
-**258 automated tests**, zero runtime test dependencies: Node's built-in test
+**262 automated tests**, zero runtime test dependencies: Node's built-in test
 runner and native TypeScript.
 
 ## Not implemented
@@ -194,7 +194,7 @@ Stated plainly rather than stubbed.
 
 ## How this was verified, and what was not
 
-Verified by execution: the type checker and the 258-test suite (unit,
+Verified by execution: the type checker and the 262-test suite (unit,
 integration, and a single end-to-end journey test that ingests the fixture,
 diagnoses it, generates and validates Fix Packs, exports every report format,
 applies fixes, re-scans and compares); the accuracy harness; a production build
@@ -534,6 +534,30 @@ because the refusal moved past `beginScan`. That was already true for local and
 GitHub inputs, so this makes all three consistent rather than leaving a false
 refusal on one. Metering refused scans is a separate decision and is not made
 here.
+
+## An eighth round: a gap I had seen and talked myself out of
+
+One finding, and the honest part is that it was not news. When the registration
+grant was added, the note in that commit said the scan path "grants again on
+rollover" and called the remaining gap good enough. It is not: opening the
+billing page is none of the three grant paths (registration, starting a scan,
+the subscription webhook), so an account that spent October's credits and
+opened Billing on the 1st of November saw a zero balance and "the AI layer is
+unavailable until this is topped up" beside the purchase buttons — while
+submitting a scan would have granted the credits immediately. That prompts
+someone to buy what they already have.
+
+The allowance is now taken before the page reads anything. It sits *inside* the
+existing try, not above it, because it resolves the plan too: on an unseeded
+catalogue it raises the same error, and that must still render the explanation
+rather than fail the page. Verified live — the balance went 0 to 40 on opening
+the page, and stayed 40 across three refreshes.
+
+The lesson is narrower than the earlier rounds and worth keeping anyway: the
+defect was not an oversight but a judgement, written down at the time, that a
+known gap did not matter. The reasoning was recorded honestly and was still
+wrong, which is a good argument for treating "good enough, and here is why" as
+something to revisit rather than something settled.
 
 ## Self-audit false positives, found and fixed
 
