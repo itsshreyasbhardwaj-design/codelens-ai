@@ -133,7 +133,12 @@ export function grantMonthlyAllowance(db: Db, organizationId: string, atIso: str
   if (plan.monthlyCredits <= 0) return balance(db, organizationId);
 
   const period = atIso.slice(0, 7); // YYYY-MM
-  const key = `allowance:${organizationId}:${period}`;
+  // The plan code is part of the key, for two reasons. An organisation that
+  // upgrades mid-month is topped up to its new plan's allowance instead of
+  // being stuck on the one it already took. And the subscription webhook grants
+  // through this same function, so it lands on this key rather than granting a
+  // second, separate allowance of its own.
+  const key = `allowance:${organizationId}:${plan.code}:${period}`;
 
   return db.tx(() => {
     const applied = applyDelta(

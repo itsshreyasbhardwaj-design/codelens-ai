@@ -201,8 +201,28 @@ export async function POST(request: Request): Promise<NextResponse> {
         402,
       );
     }
-    if (live && live.planCode === code) {
-      return fail(`This organisation is already subscribed to the ${plan.name} plan.`, 409);
+    if (live) {
+      // Any live subscription blocks a new checkout, not just one on the same
+      // plan. Stripe Checkout is always `mode=subscription`, so it can only
+      // CREATE a subscription — it cannot replace one. Nothing in this codebase
+      // cancels or modifies a subscription at the provider: the whole surface is
+      // `unavailableReason`/`createCheckout`/`verifyWebhook`, and the webhook
+      // marks the old row canceled in SQLite only. So an ordinary Solo → Pro
+      // upgrade used to leave BOTH subscriptions billing the customer while the
+      // UI showed Pro, and the local `one active subscription` index meant the
+      // database could not even represent what had happened.
+      //
+      // Refusing is a deliberate capability reduction: changing plan is not
+      // self-serve until the Subscriptions API is wired in. Taking money twice
+      // is worse than not offering the button.
+      return fail(
+        live.planCode === code
+          ? `This organisation is already subscribed to the ${plan.name} plan.`
+          : `This organisation is on the ${live.planCode} plan. Changing plan is not self-serve yet: `
+            + 'starting a second checkout would create a second subscription and bill you for both. '
+            + 'Get in touch and we will move you across.',
+        409,
+      );
     }
   } else if (!DEFAULT_PRODUCTS.some((p) => p.code === code)) {
     return fail(`'${code}' is not a product offered by this installation`, 400);

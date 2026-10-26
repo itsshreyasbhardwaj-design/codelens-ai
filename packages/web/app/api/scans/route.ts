@@ -1,6 +1,6 @@
 import { canCreateProject, canStartScan } from '@codelens/engine/billing/entitlements.ts';
 import { grantMonthlyAllowance } from '@codelens/engine/billing/credits.ts';
-import { ScanRequestInvalid, slugify, startScan, type ScanInput } from '../../lib/runner.ts';
+import { ScanRequestInvalid, projectIdFor, startScan, type ScanInput } from '../../lib/runner.ts';
 import { sessionOr401 } from '../../lib/session.ts';
 import { db } from '../../lib/store.ts';
 
@@ -186,9 +186,17 @@ export async function POST(req: Request): Promise<Response> {
 
   // A project the organisation already has does not count against the project
   // limit — only a new one does.
+  //
+  // Keyed on `projects.id`, the column persistence itself dedupes on, and
+  // derived through the same `projectIdFor` the runner uses. Keying on the slug
+  // of the optional `name` field was wrong twice over: without a name it looked
+  // up the literal slug "project" while persistence used the directory,
+  // repository or archive name, and the stored slug is truncated to 24
+  // characters where the id is not. Both made the lookup miss, so re-scanning
+  // an existing project was refused with 402 "upgrade" on the Free plan.
   const existingProject = db().get<{ id: string }>(
-    'SELECT id FROM projects WHERE organization_id = ? AND slug = ? AND deleted_at IS NULL',
-    organizationId, slugify(input.name ?? ''),
+    'SELECT id FROM projects WHERE id = ? AND organization_id = ? AND deleted_at IS NULL',
+    projectIdFor(organizationId, input), organizationId,
   );
   const blocked = !scanLimit.allowed
     ? scanLimit

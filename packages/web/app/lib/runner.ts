@@ -4,7 +4,7 @@ import { existsSync, statSync } from 'node:fs';
 import { resolve } from 'node:path';
 import type { StageResult } from '@codelens/core';
 import { runScan, type ScanOutcome, type SourceSpec } from '@codelens/engine/pipeline/orchestrator.ts';
-import { saveScan } from '@codelens/engine/pipeline/persist.ts';
+import { beginScan, saveScan } from '@codelens/engine/pipeline/persist.ts';
 import { ALL_ANALYZERS } from '@codelens/engine/analyzers/all.ts';
 import { loadAiConfig } from '@codelens/engine/ai/provider.ts';
 import { parseRepoRef } from '@codelens/engine/ingest/github.ts';
@@ -105,6 +105,41 @@ export type ScanInput =
   | { kind: 'zip'; buffer: Buffer; filename: string; name?: string };
 
 /**
+ * The project name this input will be persisted under.
+ *
+ * Exported because the entitlement check in /api/scans has to resolve the same
+ * identity this does. It used to slugify the optional `name` field alone, so a
+ * scan without a name was checked against the slug "project" while persistence
+ * used the directory, repository or archive name — the lookup always missed,
+ * and a Free account was told to upgrade to re-scan a project it already had.
+ *
+ * This does no validation and touches no filesystem, so it is safe to call
+ * before `resolveSource`.
+ */
+export function projectNameFor(input: ScanInput): string {
+  if (input.name) return input.name;
+  if (input.kind === 'local') {
+    const path = resolve(input.path.replace(/^~/, process.env.HOME ?? '~'));
+    return path.split('/').filter(Boolean).pop() ?? 'project';
+  }
+  if (input.kind === 'github') {
+    // An unparseable ref is rejected by resolveSource before anything persists.
+    try {
+      const ref = parseRepoRef(input.ref);
+      return `${ref.owner}/${ref.repo}`;
+    } catch {
+      return input.ref;
+    }
+  }
+  return input.filename.replace(/\.zip$/i, '');
+}
+
+/** The tenant-scoped project id. The slug alone is a global name. */
+export function projectIdFor(organizationId: string, input: ScanInput): string {
+  return `${organizationId}:${slugify(projectNameFor(input))}`;
+}
+
+/**
  * Validate the request and resolve it to a source. Validation happens here, in
  * the request, so a bad input is rejected immediately rather than failing inside
  * a background job the user has to wait for.
@@ -120,7 +155,7 @@ function resolveSource(input: ScanInput): { source: SourceSpec; projectName: str
     }
     return {
       source: { kind: 'local', path },
-      projectName: input.name ?? path.split('/').filter(Boolean).pop() ?? 'project',
+      projectName: projectNameFor(input),
     };
   }
 
@@ -135,7 +170,7 @@ function resolveSource(input: ScanInput): { source: SourceSpec; projectName: str
     }
     return {
       source: { kind: 'github', ref: input.ref, token: input.token ?? process.env.GITHUB_TOKEN },
-      projectName: input.name ?? `${ref.owner}/${ref.repo}`,
+      projectName: projectNameFor(input),
     };
   }
 
@@ -152,14 +187,29 @@ function resolveSource(input: ScanInput): { source: SourceSpec; projectName: str
   }
   return {
     source: { kind: 'zip', buffer: input.buffer, filename: input.filename },
-    projectName: input.name ?? input.filename.replace(/\.zip$/i, ''),
+    projectName: projectNameFor(input),
   };
 }
 
 export function startScan(input: ScanInput, organizationId: string = LOCAL_ORG): JobProgress {
   const { source, projectName } = resolveSource(input);
-  const projectId = slugify(projectName);
+  // Tenant-scoped. `projects.id` is the primary key and the slug alone is a
+  // GLOBAL name: two organisations scanning a directory called "api" shared one
+  // project row, and the second one's entire scan — snapshot, findings, fix
+  // packs — was written under the first one's project, readable by them and not
+  // by its owner. The slug stays human-facing and is unique per organisation.
+  const slug = slugify(projectName);
+  const projectId = `${organizationId}:${slug}`;
   const jobId = randomUUID();
+
+  // The scan id is derived from a key we choose, rather than minted inside the
+  // orchestrator, so the scan_jobs row can be registered BEFORE the pipeline
+  // starts. The credit ledger's scan_id is a foreign key to that row: without a
+  // referent, every AI credit reservation failed with "FOREIGN KEY constraint
+  // failed" and the AI layer never ran. Must match the orchestrator's
+  // `scan_${idempotencyKey}`.
+  const idempotencyKey = randomUUID();
+  const scanId = `scan_${idempotencyKey}`;
 
   const job: JobProgress = {
     jobId, organizationId, projectId, projectName,
@@ -170,6 +220,18 @@ export function startScan(input: ScanInput, organizationId: string = LOCAL_ORG):
   jobs.set(jobId, job);
   prune();
 
+  // Registered before the job is detached, so the row exists for the whole of
+  // the scan and a failure to register surfaces as a failed job rather than as
+  // a silent loss of the AI layer.
+  try {
+    beginScan(db(), scanId, { organizationId, projectId, projectName, slug });
+  } catch (e) {
+    job.status = 'failed';
+    job.error = `could not register the scan: ${e instanceof Error ? e.message : String(e)}`;
+    job.finishedAt = new Date().toISOString();
+    return job;
+  }
+
   // Detached: the request returns immediately with the job id.
   void (async () => {
     try {
@@ -178,6 +240,7 @@ export function startScan(input: ScanInput, organizationId: string = LOCAL_ORG):
         projectId,
         projectName,
         source,
+        idempotencyKey,
         analyzers: ALL_ANALYZERS,
         aiConfig: loadAiConfig(),
         aiCredits: {
@@ -219,7 +282,7 @@ export function startScan(input: ScanInput, organizationId: string = LOCAL_ORG):
       };
 
       if (outcome.status !== 'failed' && outcome.status !== 'cancelled') {
-        saveScan(db(), outcome, { organizationId, projectId, projectName });
+        saveScan(db(), outcome, { organizationId, projectId, projectName, slug });
       }
     } catch (e) {
       job.status = 'failed';

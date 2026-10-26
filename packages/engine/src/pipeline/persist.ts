@@ -15,12 +15,37 @@ import type { ScanSide } from '../reports/compare.ts';
 
 export interface SaveOptions {
   organizationId: string;
+  /**
+   * Globally unique. It must encode the organisation — see `ensureProject`.
+   */
   projectId: string;
   projectName: string;
+  /**
+   * Human-facing slug, unique per organisation (`UNIQUE (organization_id, slug)`).
+   * Pass it explicitly: the fallback derives it from the id, which is fine for a
+   * single-tenant caller like the CLI but wrong once the id carries a tenant
+   * prefix.
+   */
+  slug?: string;
   requestedBy?: string;
 }
 
-export function ensureProject(db: Db, opts: SaveOptions & { slug?: string }): void {
+/**
+ * Find or create the project this scan belongs to.
+ *
+ * The existence check is scoped by organisation as well as by id. An id is
+ * supposed to be tenant-unique already, but checking only the id made the
+ * engine structurally capable of attaching one tenant's scan to another
+ * tenant's project: a caller that derived the id from the project name alone
+ * (as the web runner did) silently wrote org B's snapshot, findings and fix
+ * packs under org A's project the moment both scanned a directory with the same
+ * name. The second organisation then could not read its own scan, because every
+ * read is organisation-scoped, while the first could read both.
+ *
+ * With the predicate here, a colliding id can no longer silently attach: the
+ * insert is attempted and the primary key refuses it, loudly.
+ */
+export function ensureProject(db: Db, opts: SaveOptions): void {
   const existingOrg = db.get('SELECT id FROM organizations WHERE id = ?', opts.organizationId);
   if (!existingOrg) {
     db.run(
@@ -28,7 +53,10 @@ export function ensureProject(db: Db, opts: SaveOptions & { slug?: string }): vo
       opts.organizationId, opts.projectName, `org-${opts.organizationId.slice(0, 8)}`, now(), now(),
     );
   }
-  const existing = db.get('SELECT id FROM projects WHERE id = ?', opts.projectId);
+  const existing = db.get(
+    'SELECT id FROM projects WHERE id = ? AND organization_id = ?',
+    opts.projectId, opts.organizationId,
+  );
   if (!existing) {
     db.run(
       'INSERT INTO projects (id, organization_id, name, slug, kind, created_at, updated_at) VALUES (?,?,?,?,?,?,?)',
@@ -36,6 +64,28 @@ export function ensureProject(db: Db, opts: SaveOptions & { slug?: string }): vo
       opts.slug ?? opts.projectId.slice(0, 24), 'source', now(), now(),
     );
   }
+}
+
+/**
+ * Register the scan row before the pipeline runs.
+ *
+ * Anything that references `scan_jobs(id)` while the scan is in flight needs a
+ * row to point at, and the credit ledger is exactly that: reserving AI credits
+ * writes `credit_ledger.scan_id`, which is a foreign key to this table. Without
+ * this, every metered scan failed its reservation with `FOREIGN KEY constraint
+ * failed`, the orchestrator reported that as a credit refusal, and the AI layer
+ * never ran for anybody — the scan still completed, so nothing looked broken.
+ *
+ * Idempotent. `saveScan` upserts the same id when the scan finishes.
+ */
+export function beginScan(db: Db, scanId: string, opts: SaveOptions): void {
+  ensureProject(db, opts);
+  db.run(
+    `INSERT INTO scan_jobs (id, project_id, idempotency_key, status, requested_by, queued_at, started_at)
+     VALUES (?,?,?,'running',?,?,?)
+     ON CONFLICT(id) DO NOTHING`,
+    scanId, opts.projectId, scanId, opts.requestedBy ?? null, now(), now(),
+  );
 }
 
 export function saveScan(db: Db, outcome: ScanOutcome, opts: SaveOptions): void {
@@ -71,11 +121,26 @@ export function saveScan(db: Db, outcome: ScanOutcome, opts: SaveOptions): void 
     }
 
     // --- scan job ---
+    // Upsert, because `beginScan` may already have registered this row so the
+    // credit ledger had a referent during the scan. A plain INSERT here fails
+    // on `UNIQUE (project_id, idempotency_key)` and rolls back the whole save,
+    // which would lose the scan entirely — a worse bug than the one beginScan
+    // fixes. `queued_at` is deliberately not overwritten: it records when the
+    // job was first registered.
     db.run(
       `INSERT INTO scan_jobs
          (id, project_id, snapshot_id, idempotency_key, status, requested_by, ai_provider, dynamic_verify,
           coverage_json, error_message, queued_at, started_at, finished_at)
-       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)
+       ON CONFLICT(id) DO UPDATE SET
+         snapshot_id    = excluded.snapshot_id,
+         status         = excluded.status,
+         ai_provider    = excluded.ai_provider,
+         dynamic_verify = excluded.dynamic_verify,
+         coverage_json  = excluded.coverage_json,
+         error_message  = excluded.error_message,
+         started_at     = excluded.started_at,
+         finished_at    = excluded.finished_at`,
       outcome.scanId, opts.projectId, snapshotId ?? null, outcome.scanId, outcome.status,
       opts.requestedBy ?? null, outcome.aiReport?.usage.provider ?? 'none',
       outcome.coverage.layers.dynamic ? 1 : 0,

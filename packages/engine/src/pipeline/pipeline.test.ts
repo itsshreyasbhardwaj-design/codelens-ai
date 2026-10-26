@@ -6,7 +6,7 @@ import { join } from 'node:path';
 import { Db, NotFoundError } from '../db/index.ts';
 import { CredentialStorageUnavailable, encryptToken, decryptToken, redactSecrets } from '../db/crypto.ts';
 import { runScan } from './orchestrator.ts';
-import { saveScan, loadScanSide, listScans } from './persist.ts';
+import { beginScan, ensureProject, saveScan, loadScanSide, listScans } from './persist.ts';
 import { securityAnalyzer } from '../analyzers/security.ts';
 import type { Analyzer } from '../analyzers/types.ts';
 
@@ -448,5 +448,92 @@ describe('credential handling', () => {
     assert.doesNotMatch(out, /hunter2/);
     assert.doesNotMatch(out, /AKIAIOSFODNN7EXAMPLE/);
     assert.match(out, /REDACTED/);
+  });
+});
+
+describe('project identity is scoped to the organisation', () => {
+  function orgs(db: Db): [string, string] {
+    for (const id of ['org_alpha', 'org_beta']) {
+      db.run(
+        'INSERT INTO organizations (id, name, slug, created_at, updated_at) VALUES (?,?,?,?,?)',
+        id, id, id.replace('_', '-'), new Date().toISOString(), new Date().toISOString(),
+      );
+    }
+    return ['org_alpha', 'org_beta'];
+  }
+
+  it('refuses to attach one organisation\'s scan to another\'s project', (t) => {
+    const db = new Db(':memory:');
+    db.migrate();
+    t.after(() => db.close());
+    const [alpha, beta] = orgs(db);
+
+    // Both organisations scan a directory called "api". Before the fix the web
+    // runner derived the project id from the name alone, so both produced the
+    // id "api"; ensureProject looked it up WITHOUT an organisation predicate,
+    // found alpha's row, skipped the insert, and wrote beta's entire scan —
+    // snapshot, findings, fix packs — under alpha's project. Alpha could read
+    // beta's private source analysis; beta could not read its own.
+    ensureProject(db, { organizationId: alpha, projectId: 'api', projectName: 'api', slug: 'api' });
+
+    assert.throws(
+      () => ensureProject(db, { organizationId: beta, projectId: 'api', projectName: 'api', slug: 'api' }),
+      /UNIQUE|constraint/i,
+      'a colliding id must fail loudly rather than attach to the other tenant',
+    );
+
+    const owner = db.get<{ organization_id: string }>(
+      'SELECT organization_id FROM projects WHERE id = ?', 'api',
+    );
+    assert.equal(owner?.organization_id, alpha, "the first organisation's project is untouched");
+  });
+
+  it('keeps same-named projects apart when the id carries the organisation', (t) => {
+    const db = new Db(':memory:');
+    db.migrate();
+    t.after(() => db.close());
+    const [alpha, beta] = orgs(db);
+
+    // The shape the runner now produces: `${organizationId}:${slug}`.
+    ensureProject(db, { organizationId: alpha, projectId: `${alpha}:api`, projectName: 'api', slug: 'api' });
+    ensureProject(db, { organizationId: beta, projectId: `${beta}:api`, projectName: 'api', slug: 'api' });
+
+    const rows = db.all<{ id: string; organization_id: string; slug: string }>(
+      'SELECT id, organization_id, slug FROM projects ORDER BY organization_id',
+    );
+    assert.equal(rows.length, 2, 'two organisations, two projects');
+    assert.deepEqual(rows.map((r) => r.organization_id), [alpha, beta]);
+    // The human-facing slug stays readable and is unique per organisation.
+    assert.deepEqual(rows.map((r) => r.slug), ['api', 'api']);
+  });
+
+  it('registers a scan row before the pipeline runs, and completes it afterwards', async (t) => {
+    const dir = tempProject(MINIMAL_APP);
+    const db = new Db(':memory:');
+    db.migrate();
+    t.after(() => { db.close(); rmSync(dir, { recursive: true, force: true }); });
+    const [alpha] = orgs(db);
+    const opts = { organizationId: alpha, projectId: `${alpha}:tiny`, projectName: 'Tiny', slug: 'tiny' };
+
+    const scanId = 'scan_fixed-key';
+    beginScan(db, scanId, opts);
+    const registered = db.get<{ status: string }>('SELECT status FROM scan_jobs WHERE id = ?', scanId);
+    assert.equal(registered?.status, 'running', 'the row must exist while the scan is in flight');
+
+    const outcome = await runScan({
+      projectId: opts.projectId, projectName: opts.projectName,
+      source: { kind: 'local', path: dir },
+      analyzers: [securityAnalyzer],
+      idempotencyKey: 'fixed-key',
+    });
+    assert.equal(outcome.scanId, scanId, 'the runner must be able to predict the scan id');
+
+    // The upsert matters: a plain insert here hits UNIQUE (project_id,
+    // idempotency_key) and rolls back the entire save, losing the scan.
+    saveScan(db, outcome, opts);
+
+    const rows = db.all('SELECT id, status FROM scan_jobs WHERE id = ?', scanId);
+    assert.equal(rows.length, 1, 'one row, updated in place');
+    assert.notEqual((rows[0] as { status: string }).status, 'running', 'the final status must be recorded');
   });
 });

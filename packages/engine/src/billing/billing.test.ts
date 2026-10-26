@@ -11,6 +11,8 @@ import {
   estimateScanCredits, usageSummary,
 } from './entitlements.ts';
 import { DEFAULT_PLANS, listPlans, planByCode, planForOrganization, seedPlans } from './plans.ts';
+import { applyWebhookEvent } from './payments.ts';
+import { beginScan } from '../pipeline/persist.ts';
 
 const KEY = 'billing-test-secret-key-at-least-32-chars';
 
@@ -337,5 +339,117 @@ describe('AI spending', () => {
     assert.equal(s.credits.balance, 120);
     assert.equal(s.projects.limit, 1);
     assert.equal(s.scans.resetsOn, '2026-04-01');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Regressions from the PR #1 review. Each of these passed before the fix in the
+// sense that no test exercised the path at all; each fails if the fix is undone.
+// ---------------------------------------------------------------------------
+
+describe('credit reservation needs a scan row to point at', () => {
+  it('refuses to reserve against a scan that was never registered', (t) => {
+    const { db, org } = setup();
+    t.after(() => db.close());
+    grant(db, org, 500, 'test credits', 'k1');
+
+    // credit_ledger.scan_id is a foreign key to scan_jobs. This is the state the
+    // web runner used to be in on every single scan: the orchestrator minted a
+    // scan id and reserved against it while the row was still unwritten.
+    assert.throws(
+      () => reserve(db, org, 30, { scanId: 'scan_never_registered', idempotencyKey: 'r1' }),
+      /FOREIGN KEY constraint failed/,
+    );
+    assert.equal(balance(db, org), 500, 'a failed reservation must not move the balance');
+    assert.equal(held(db, org), 0);
+  });
+
+  it('reserves once the scan row has been registered by beginScan', (t) => {
+    const { db, org } = setup();
+    t.after(() => db.close());
+    grant(db, org, 500, 'test credits', 'k1');
+
+    beginScan(db, 'scan_registered', {
+      organizationId: org, projectId: `${org}:demo`, projectName: 'demo', slug: 'demo',
+    });
+
+    const r = reserve(db, org, 30, { scanId: 'scan_registered', idempotencyKey: 'r1' });
+    assert.equal(r.status, 'held');
+    assert.equal(held(db, org), 30);
+    // The audit link the billing page renders per charge.
+    assert.equal(ledger(db, org, 10)[0]?.scanId, 'scan_registered');
+  });
+});
+
+describe('the monthly allowance is granted once per plan per month', () => {
+  function subscriptionEvent(org: string, id: string, status = 'active') {
+    return {
+      id,
+      type: 'customer.subscription.updated',
+      data: {
+        id: 'sub_live_1',
+        status,
+        metadata: { organization_id: org, code: 'pro' },
+      },
+    };
+  }
+
+  it('does not grant a fresh allowance for every subscription event', (t) => {
+    const { db, org } = setup();
+    t.after(() => db.close());
+    const pro = planByCode(db, 'pro')!;
+
+    // Stripe sends customer.subscription.updated on every renewal, card change,
+    // cancellation toggle and past_due recovery. Each one has its own event id,
+    // so an event-keyed grant handed out a whole allowance every time.
+    applyWebhookEvent(db, 'stripe', subscriptionEvent(org, 'evt_1'));
+    const afterFirst = balance(db, org);
+    applyWebhookEvent(db, 'stripe', subscriptionEvent(org, 'evt_2'));
+    applyWebhookEvent(db, 'stripe', subscriptionEvent(org, 'evt_3'));
+
+    assert.equal(afterFirst, pro.monthlyCredits);
+    assert.equal(balance(db, org), pro.monthlyCredits, 'three events must grant one allowance');
+  });
+
+  it('does not grant a second allowance through the scan path in the same month', (t) => {
+    const { db, org } = setup();
+    t.after(() => db.close());
+    const pro = planByCode(db, 'pro')!;
+
+    applyWebhookEvent(db, 'stripe', subscriptionEvent(org, 'evt_1'));
+    // The scans and registration routes both call this on every request.
+    grantMonthlyAllowance(db, org, new Date().toISOString());
+    grantMonthlyAllowance(db, org, new Date().toISOString());
+
+    assert.equal(balance(db, org), pro.monthlyCredits, 'the webhook and the scan path share one key');
+  });
+
+  it('tops an organisation up when it upgrades part-way through a month', (t) => {
+    const { db, org } = setup();
+    t.after(() => db.close());
+    const free = planByCode(db, 'free')!;
+    const pro = planByCode(db, 'pro')!;
+
+    // Took the free allowance first, then upgraded. Keying the allowance on the
+    // month alone would leave this organisation on 40 credits until next month.
+    grantMonthlyAllowance(db, org, new Date().toISOString());
+    assert.equal(balance(db, org), free.monthlyCredits);
+
+    applyWebhookEvent(db, 'stripe', subscriptionEvent(org, 'evt_upgrade'));
+    assert.equal(balance(db, org), free.monthlyCredits + pro.monthlyCredits);
+  });
+
+  it('applies an enterprise subscription even though its allowance is zero', (t) => {
+    const { db, org } = setup();
+    t.after(() => db.close());
+    // grant() throws on a non-positive amount, which would roll back the whole
+    // event and leave a paying enterprise customer with no subscription row.
+    const out = applyWebhookEvent(db, 'stripe', {
+      id: 'evt_ent',
+      type: 'customer.subscription.updated',
+      data: { id: 'sub_ent', status: 'active', metadata: { organization_id: org, code: 'enterprise' } },
+    });
+    assert.equal(out.applied, true);
+    assert.equal(planForOrganization(db, org).code, 'enterprise');
   });
 });

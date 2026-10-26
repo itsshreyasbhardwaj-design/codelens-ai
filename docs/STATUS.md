@@ -141,7 +141,7 @@ provider configured the app says so and leaves every account on the free plan;
 with Stripe selected but no webhook secret it **refuses to run billing at all**,
 because entitlements would otherwise rest on an unverified request.
 
-**199 automated tests**, zero runtime test dependencies: Node's built-in test
+**213 automated tests**, zero runtime test dependencies: Node's built-in test
 runner and native TypeScript.
 
 ## Not implemented
@@ -194,7 +194,7 @@ Stated plainly rather than stubbed.
 
 ## How this was verified, and what was not
 
-Verified by execution: the type checker and the 199-test suite (unit,
+Verified by execution: the type checker and the 213-test suite (unit,
 integration, and a single end-to-end journey test that ingests the fixture,
 diagnoses it, generates and validates Fix Packs, exports every report format,
 applies fixes, re-scans and compares); the accuracy harness; a production build
@@ -276,6 +276,56 @@ suppressing.**
 All three rule changes were made without losing a single ground-truth detection:
 recall stayed at 69/69 and the suite at 204 passing. Our own code now has
 **zero P0 findings**.
+
+## What an external review caught that we did not
+
+An automated review on PR #1 reported five defects. All five were independently
+reproduced before anything was changed, and all five were real. They are
+recorded here because the pattern matters more than the individual bugs: every
+one of them sat in code that the test suite passed, that typechecked, and that
+had been exercised by hand.
+
+- **Cross-tenant data exposure (the worst of them).** The web runner derived a
+  project's id from its name alone, and `ensureProject` looked that id up
+  without an organisation predicate. Two organisations scanning a directory
+  with the same name shared one project row: the second organisation's
+  snapshot, findings and fix packs were written under the first organisation's
+  project — readable by them, and not by its owner, whose dashboard simply came
+  back empty. One free signup and a guessable project name was the whole attack.
+  Project ids are now tenant-scoped and `ensureProject` is organisation-scoped,
+  so a colliding id fails loudly instead of attaching silently.
+- **The AI layer never ran, for anyone.** `credit_ledger.scan_id` is a foreign
+  key to `scan_jobs`, and the scan row was only written *after* the pipeline
+  finished — so every credit reservation failed with `FOREIGN KEY constraint
+  failed`, which the orchestrator reported as a credit refusal. A customer with
+  a full balance saw a database error in the billing-refusal slot and no AI
+  analysis, on every scan, 100% of the time. The scan row is now registered
+  before the pipeline starts and completed by an upsert afterwards.
+- **Every subscription event granted a full month's credits.** The grant was
+  keyed on the provider event id, and Stripe sends
+  `customer.subscription.updated` for renewals, card changes, cancellation
+  toggles and `past_due` recoveries. A separate monthly key could never collide
+  with it, so the scan path added one more on top. Both paths now share one key
+  of (organisation, plan, month) — which also fixes a silent under-grant for
+  anyone upgrading mid-month, and stops an Enterprise subscription throwing on
+  its zero allowance.
+- **A plan change would have billed the customer twice.** Stripe Checkout is
+  always `mode=subscription`: it can only create a subscription, never replace
+  one, and nothing in this codebase cancels or modifies a subscription at the
+  provider. An ordinary Solo → Pro upgrade would have left both billing while
+  the UI showed Pro. Changing plan is now refused with an explanation until the
+  Subscriptions API is wired in; credit top-ups are unaffected.
+- **Re-scanning your own project was refused as a new one.** The entitlement
+  check slugified the *optional* `name` field, so an unnamed scan looked up the
+  literal slug `project` while persistence used the directory, repository or
+  archive name; the stored slug was also truncated to 24 characters where the id
+  was not. A Free account was told to upgrade to do something its plan allowed.
+  Both now resolve the same identity through one function.
+
+Each has a regression test that fails if its fix is reverted — verified by
+reverting them. The honest lesson is that the suite passing said nothing about
+any of this: the pipeline tests stubbed the credit hooks, and no test had ever
+created two organisations and had them scan the same directory.
 
 ## Self-audit false positives, found and fixed
 

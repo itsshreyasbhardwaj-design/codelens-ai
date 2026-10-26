@@ -1,6 +1,6 @@
 import { createHmac, randomUUID, timingSafeEqual } from 'node:crypto';
 import { Db, now } from '../db/index.ts';
-import { grant } from './credits.ts';
+import { grant, grantMonthlyAllowance } from './credits.ts';
 import { DEFAULT_PRODUCTS, planByCode } from './plans.ts';
 
 /**
@@ -346,7 +346,20 @@ function handle(db: Db, provider: ProviderName, event: WebhookEvent): WebhookOut
       db.run('UPDATE organizations SET plan_code = ? WHERE id = ?', plan.code, organizationId);
 
       if (mapped === 'active' || mapped === 'trialing') {
-        grant(db, organizationId, plan.monthlyCredits, `${plan.name} allowance`, `sub:${event.id}`);
+        // Keyed on (organisation, plan, month) by `grantMonthlyAllowance`, not
+        // on this event's id. Stripe sends customer.subscription.updated for
+        // every renewal, cancellation toggle, card change and past_due
+        // recovery, and a per-event key granted a whole monthly allowance for
+        // each one — unbounded, silent, and on the normal monthly path for
+        // every paying subscriber. It also granted a second allowance on top of
+        // the one the scan and registration paths take, because those used a
+        // different key that could never collide.
+        //
+        // This call is also what tops up an organisation that upgrades
+        // mid-month: the plan is in the key, so a new plan is a new grant.
+        // `monthlyCredits <= 0` returns early inside, which Enterprise needs —
+        // `grant` throws on a non-positive amount and would roll the event back.
+        grantMonthlyAllowance(db, organizationId, now());
       }
       return { applied: true, action: `subscription ${mapped} on ${plan.code}`, organizationId };
     }
