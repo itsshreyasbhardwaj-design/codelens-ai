@@ -1,0 +1,51 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>CodeLens AI</title>
+<style>
+:root { --bg:#fbfbfc; --surface:#fff; --border:#dfe2e7; --ink:#15171c; --ink-3:#6b7280; --accent:#1f4ed8 }
+@media (prefers-color-scheme: dark) {
+  :root { --bg:#0e1014; --surface:#161920; --border:#2b313c; --ink:#eef0f4; --ink-3:#8b93a1; --accent:#7d9bff }
+}
+*{box-sizing:border-box} body{background:var(--bg);color:var(--ink);margin:0;padding:2.5rem 1rem 4rem;
+  line-height:1.6;font:16px/1.6 ui-sans-serif,system-ui,-apple-system,"Segoe UI",sans-serif}
+main{max-width:44rem;margin:0 auto} h1{font-size:2rem;letter-spacing:-.025em;margin:0 0 .3rem}
+.tag{color:var(--ink-3);margin:0 0 2rem;font-size:1.05rem}
+a.card{display:block;background:var(--surface);border:1px solid var(--border);border-radius:10px;
+  padding:1rem 1.15rem;margin-bottom:.7rem;text-decoration:none;color:inherit}
+a.card:hover{border-color:var(--accent)} a.card h2{font-size:1rem;margin:0 0 .2rem;color:var(--accent)}
+a.card p{margin:0;font-size:.88rem;color:var(--ink-3)} a{color:var(--accent)}
+h3{font-size:.8rem;text-transform:uppercase;letter-spacing:.06em;color:var(--ink-3);margin:1.8rem 0 .6rem}
+:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+</style>
+</head>
+<body><main>
+  <h1>CodeLens AI</h1>
+  <p class="tag">Understand any codebase. Diagnose what matters. Fix it with precision.</p>
+
+  <a class="card" href="sample-report/">
+    <h2>See a real report &rarr;</h2>
+    <p>Genuine scanner output from the bundled demonstration project: 90 findings, 16 Fix Packs, full evidence.</p>
+  </a>
+  <a class="card" href="https://github.com/itsshreyasbhardwaj-design/codelens-ai">
+    <h2>Source on GitHub &rarr;</h2>
+    <p>MIT licensed. Runs offline with no API key: <code>pnpm install &amp;&amp; pnpm scan ./your-project</code></p>
+  </a>
+
+  <h3>Documentation</h3>
+  <a class="card" href="https://github.com/itsshreyasbhardwaj-design/codelens-ai/blob/main/docs/STATUS.md">
+    <h2>Implementation status &rarr;</h2>
+    <p>What is verified working, what is deliberately not built, and the known weaknesses.</p>
+  </a>
+  <a class="card" href="https://github.com/itsshreyasbhardwaj-design/codelens-ai/blob/main/docs/LIMITATIONS.md">
+    <h2>Limitations &rarr;</h2>
+    <p>What CodeLens cannot tell you. Read this before trusting any report.</p>
+  </a>
+  <a class="card" href="https://github.com/itsshreyasbhardwaj-design/codelens-ai/blob/main/docs/ARCHITECTURE.md">
+    <h2>Architecture &rarr;</h2>
+    <p>The twelve-stage pipeline, the four analysis layers, the evidence gate, and the scoring rules.</p>
+  </a>
+</main></body>
+</html>
