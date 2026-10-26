@@ -7,7 +7,7 @@ import {
   recoverOrphanedScans, release, releaseStaleReservations, reserve, ReservationNotFound, settle,
 } from './credits.ts';
 import {
-  canAddSeat, canCreateProject, canStartScan, canUseAi, creditsForUsage, projectCount,
+  canAddSeat, canCreateProject, canStartScan, canUseAi, creditsForUsage, holdsProjectSlot, projectCount,
   estimateScanCredits, tokensForCredits, usageSummary,
 } from './entitlements.ts';
 import { DEFAULT_PLANS, listPlans, planByCode, planForOrganization, seedPlans } from './plans.ts';
@@ -630,5 +630,95 @@ describe('a restart returns the credits it interrupted', () => {
     const out = recoverOrphanedScans(db);
     assert.equal(out.reservations, 0, 'a settled reservation must not be touched');
     assert.equal(balance(db, org), 90, '10 charged, 20 returned, nothing else');
+  });
+});
+
+describe('a slot is reused only by a project that holds one', () => {
+  function project(db: Db, org: string, id: string): void {
+    db.run(
+      `INSERT INTO projects (id, organization_id, name, slug, kind, created_at, updated_at)
+       VALUES (?,?,?,?,'source','n','n')`, id, org, id, id,
+    );
+  }
+  function scan(db: Db, projectId: string, status: string, finished = true): void {
+    db.run(
+      `INSERT INTO scan_jobs (id, project_id, idempotency_key, status, queued_at, finished_at)
+       VALUES (?,?,?,?,'n',?)`,
+      `s_${projectId}_${status}_${Math.random()}`, projectId, `k_${projectId}_${Math.random()}`,
+      status, finished ? 'n' : null,
+    );
+  }
+
+  it('exempts a re-scan of a project that has been analysed', (t) => {
+    const { db, org } = setup();
+    t.after(() => db.close());
+    project(db, org, 'a');
+    scan(db, 'a', 'completed');
+    // At the limit, but re-scanning what you already have must still work —
+    // this is the whole reason the exemption exists.
+    assert.equal(canCreateProject(db, org).allowed, false);
+    assert.equal(holdsProjectSlot(db, org, 'a'), true);
+  });
+
+  it('refuses to exempt a project whose only scans failed', (t) => {
+    const { db, org } = setup();
+    t.after(() => db.close());
+    // The bug: fail a scan cheaply (the row is kept but holds no slot), let
+    // something else take the slot, then come back later. The retry used to be
+    // waved through, and repeating it gave a one-project plan any number of
+    // analysed projects.
+    project(db, org, 'failed');
+    scan(db, 'failed', 'failed');
+    project(db, org, 'real');
+    scan(db, 'real', 'completed');
+
+    assert.equal(projectCount(db, org), 1, 'only the analysed project holds a slot');
+    assert.equal(canCreateProject(db, org).allowed, false);
+    assert.equal(holdsProjectSlot(db, org, 'failed'), false, 'a failed project must not buy an exemption');
+  });
+
+  it('still exempts a failed project when the organisation is under its limit', (t) => {
+    const { db, org } = setup();
+    t.after(() => db.close());
+    project(db, org, 'failed');
+    scan(db, 'failed', 'failed');
+    // Nothing holds a slot, so the retry is allowed by the limit itself — it
+    // does not need an exemption, and must not be refused.
+    assert.equal(canCreateProject(db, org).allowed, true);
+  });
+
+  it('exempts a project whose first scan is still running', (t) => {
+    const { db, org } = setup();
+    t.after(() => db.close());
+    project(db, org, 'live');
+    scan(db, 'live', 'running', false);
+    assert.equal(holdsProjectSlot(db, org, 'live'), true, 'an in-flight first scan holds its slot');
+  });
+
+  it('exempts a project analysed once whose latest scan failed', (t) => {
+    const { db, org } = setup();
+    t.after(() => db.close());
+    project(db, org, 'a');
+    scan(db, 'a', 'completed');
+    scan(db, 'a', 'failed');
+    assert.equal(holdsProjectSlot(db, org, 'a'), true, 'one good scan is enough, for ever');
+  });
+
+  it('does not exempt a soft-deleted project', (t) => {
+    const { db, org } = setup();
+    t.after(() => db.close());
+    project(db, org, 'gone');
+    scan(db, 'gone', 'completed');
+    db.run("UPDATE projects SET deleted_at = 'n' WHERE id = 'gone'");
+    assert.equal(holdsProjectSlot(db, org, 'gone'), false);
+  });
+
+  it('does not exempt another organisation\'s project', (t) => {
+    const { db, org } = setup();
+    t.after(() => db.close());
+    const other = register(db, { email: `x${Math.random()}@example.com`, password: 'a-good-password' });
+    project(db, other.organizationId, 'theirs');
+    scan(db, 'theirs', 'completed');
+    assert.equal(holdsProjectSlot(db, org, 'theirs'), false);
   });
 });

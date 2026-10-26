@@ -35,6 +35,30 @@ export function scansThisMonth(db: Db, organizationId: string, atIso: string): n
   return Number(row?.n ?? 0);
 }
 
+/**
+ * SQL predicate for "project `p` holds a slot": it has been analysed, or its
+ * first analysis is still running.
+ *
+ * `projectCount` and the scans route's existing-project exemption MUST agree,
+ * and they are written once here because when they drifted apart a row that
+ * held no slot still bought a full exemption from the limit it was not counted
+ * against — so a one-project plan could reach any number of analysed projects
+ * by banking failed scans and retrying them later.
+ */
+const HOLDS_SLOT = `EXISTS (SELECT 1 FROM scan_jobs s
+                             WHERE s.project_id = p.id
+                               AND (s.status IN ('completed','partial')
+                                    OR s.finished_at IS NULL))`;
+
+/** Whether re-scanning `projectId` reuses a slot the organisation already holds. */
+export function holdsProjectSlot(db: Db, organizationId: string, projectId: string): boolean {
+  return !!db.get(
+    `SELECT 1 FROM projects p
+      WHERE p.id = ? AND p.organization_id = ? AND p.deleted_at IS NULL AND ${HOLDS_SLOT}`,
+    projectId, organizationId,
+  );
+}
+
 export function projectCount(db: Db, organizationId: string): number {
   const row = db.get<{ n: number }>(
     // A slot is held by a project that has been analysed, or whose first
@@ -52,11 +76,7 @@ export function projectCount(db: Db, organizationId: string): number {
     // two projects. It is safe because `recoverOrphanedScans` rewrites every
     // `running` row at boot, so a dead process cannot hold a slot for ever.
     `SELECT COUNT(*) AS n FROM projects p
-      WHERE p.organization_id = ? AND p.deleted_at IS NULL
-        AND EXISTS (SELECT 1 FROM scan_jobs s
-                     WHERE s.project_id = p.id
-                       AND (s.status IN ('completed','partial')
-                            OR s.finished_at IS NULL))`,
+      WHERE p.organization_id = ? AND p.deleted_at IS NULL AND ${HOLDS_SLOT}`,
     organizationId,
   );
   return Number(row?.n ?? 0);
@@ -89,6 +109,14 @@ export function canCreateProject(db: Db, organizationId: string): LimitCheck {
   };
 }
 
+/**
+ * `repoSizeMb` must be POST-EXCLUSION analysed megabytes — the same quantity
+ * the orchestrator enforces `maxSourceBytes` against. No caller passes it
+ * today: the only one that could, a ZIP upload, has nothing but compressed
+ * bytes, and those are not a lower bound on it. Kept because it carries the
+ * only user-facing megabyte message and is where a sound pre-check would plug
+ * in.
+ */
 export function canStartScan(
   db: Db,
   organizationId: string,

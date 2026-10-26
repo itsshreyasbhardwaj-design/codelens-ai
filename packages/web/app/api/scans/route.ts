@@ -1,4 +1,4 @@
-import { canCreateProject, canStartScan } from '@codelens/engine/billing/entitlements.ts';
+import { canCreateProject, holdsProjectSlot, canStartScan } from '@codelens/engine/billing/entitlements.ts';
 import { grantMonthlyAllowance } from '@codelens/engine/billing/credits.ts';
 import { ScanRequestInvalid, projectIdFor, startScan, type ScanInput } from '../../lib/runner.ts';
 import { sessionOr401 } from '../../lib/session.ts';
@@ -181,12 +181,20 @@ export async function POST(req: Request): Promise<Response> {
   const projectLimit = canCreateProject(db(), organizationId);
   const scanLimit = canStartScan(db(), organizationId, {
     atIso: new Date().toISOString(),
-    // One-sided early refusal only: compressed bytes can never exceed the
-    // uncompressed source, so an upload already over the limit is certainly
-    // over it. The real check is in the orchestrator, against analysed bytes
-    // after normalisation — this one cannot see a 13 MB archive that expands
-    // to 2 GB, and there is nothing it could read here that would.
-    repoSizeMb: input.kind === 'zip' ? input.buffer.length / 1_000_000 : undefined,
+    // No size is passed, deliberately.
+    //
+    // The one-sided argument for passing the compressed upload size does not
+    // hold, and it was wrong in the commit that wrote it: compressed bytes
+    // bound the UNCOMPRESSED TOTAL, while the plan ceiling is enforced on
+    // ANALYSED bytes — `snapshot.totalBytes`, after normalisation drops
+    // node_modules, build output and vendored files. A valid 54 MB archive
+    // whose entries are all inside node_modules normalises to a few dozen
+    // bytes, and this refused it as "about 54 MB" while the same content as a
+    // local directory was accepted.
+    //
+    // The ceiling is enforced in the orchestrator against the real figure. The
+    // upload itself stays bounded by MAX_ARCHIVE_BYTES above, which is a
+    // request-size guard and not a plan limit — the two must not be merged.
   });
 
   // A project the organisation already has does not count against the project
@@ -199,13 +207,16 @@ export async function POST(req: Request): Promise<Response> {
   // repository or archive name, and the stored slug is truncated to 24
   // characters where the id is not. Both made the lookup miss, so re-scanning
   // an existing project was refused with 402 "upgrade" on the Free plan.
-  const existingProject = db().get<{ id: string }>(
-    'SELECT id FROM projects WHERE id = ? AND organization_id = ? AND deleted_at IS NULL',
-    projectIdFor(organizationId, input), organizationId,
-  );
+  // ...and on whether it HOLDS A SLOT, not on whether a row exists. A project
+  // whose only scans failed is not counted by `projectCount`, so exempting it
+  // from the limit let a one-project plan analyse any number of projects: fail
+  // a scan cheaply, come back next month, and the retry is waved through. Both
+  // questions now share one predicate in `entitlements.ts` so they cannot drift
+  // apart again.
+  const reusesSlot = holdsProjectSlot(db(), organizationId, projectIdFor(organizationId, input));
   const blocked = !scanLimit.allowed
     ? scanLimit
-    : (!existingProject && !projectLimit.allowed ? projectLimit : undefined);
+    : (!reusesSlot && !projectLimit.allowed ? projectLimit : undefined);
 
   if (blocked) {
     // 402 rather than 403: this is a billing boundary, not a permission error,

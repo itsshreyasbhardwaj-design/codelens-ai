@@ -141,7 +141,7 @@ provider configured the app says so and leaves every account on the free plan;
 with Stripe selected but no webhook secret it **refuses to run billing at all**,
 because entitlements would otherwise rest on an unverified request.
 
-**251 automated tests**, zero runtime test dependencies: Node's built-in test
+**258 automated tests**, zero runtime test dependencies: Node's built-in test
 runner and native TypeScript.
 
 ## Not implemented
@@ -194,7 +194,7 @@ Stated plainly rather than stubbed.
 
 ## How this was verified, and what was not
 
-Verified by execution: the type checker and the 251-test suite (unit,
+Verified by execution: the type checker and the 258-test suite (unit,
 integration, and a single end-to-end journey test that ingests the fixture,
 diagnoses it, generates and validates Fix Packs, exports every report format,
 applies fixes, re-scans and compares); the accuracy harness; a production build
@@ -495,6 +495,45 @@ Two findings, both in code an earlier round introduced.
 The verification pass again downgraded a severity (the checkout race needs two
 deliberate card payments, so P2 rather than P1) and again corrected an
 attribution (`beginScan` landed in `3b0a8e5`, not `aa4f97b`).
+
+## A seventh round: when a fix changes a premise another file relies on
+
+Two findings, and together they name the failure mode behind most of this list.
+Neither was wrong code in isolation. Both were correct edits that quietly
+changed a fact some other code was depending on, where both halves still read
+correctly on their own.
+
+- **The project-limit exemption disagreed with the slot rule.** The previous
+  round made a never-analysed project cost no slot, but the scans route has a
+  *separate* query that exempts any existing project row from the limit, and it
+  was not updated. So a row that held no slot still bought a full exemption from
+  the limit it was not counted against. The overshoot is not capped at two:
+  failed scans are cheap, so rows can be banked in one month and cashed in later,
+  one exemption each, to any number of analysed projects on a one-project plan.
+  The two questions now share one SQL predicate in `entitlements.ts`, so they
+  cannot drift apart again — which is the actual fix, the behaviour change
+  being a consequence of it.
+- **The ZIP pre-check refused uploads that were inside the plan limit.** It
+  passed the *compressed* upload size as the plan size, justified by a comment
+  of mine arguing that compressed bytes cannot exceed the source. That is true
+  of raw uncompressed bytes and false of the quantity the limit is actually
+  enforced against — analysed bytes, after normalisation drops `node_modules`,
+  build output and vendored files. A valid 54 MB archive that is all
+  `node_modules` normalises to a few dozen bytes and was refused as "about
+  54 MB", while the same content as a local directory was accepted. The
+  pre-check is gone; `MAX_ARCHIVE_BYTES` still bounds the upload, and the plan
+  ceiling is enforced where the real figure exists.
+
+Worth recording precisely, because it is the sharpest lesson here: that comment
+was not stale. It was written in the *same commit* that introduced the correct
+post-normalisation check — a confident justification for a premise the other
+half of the same change had just invalidated.
+
+Known and accepted: an over-limit ZIP now costs one of the month's scans,
+because the refusal moved past `beginScan`. That was already true for local and
+GitHub inputs, so this makes all three consistent rather than leaving a false
+refusal on one. Metering refused scans is a separate decision and is not made
+here.
 
 ## Self-audit false positives, found and fixed
 
