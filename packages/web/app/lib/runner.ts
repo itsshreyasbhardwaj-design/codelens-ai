@@ -15,7 +15,7 @@ import { planForOrganization } from '@codelens/engine/billing/plans.ts';
 import {
   canUseAi, creditsForUsage, estimateScanCredits, tokensForCredits,
 } from '@codelens/engine/billing/entitlements.ts';
-import { db, LOCAL_ORG } from './store.ts';
+import { db, LOCAL_ORG, workspaceRoot } from './store.ts';
 
 /**
  * Background scan execution.
@@ -108,6 +108,24 @@ export type ScanInput =
   | { kind: 'zip'; buffer: Buffer; filename: string; name?: string };
 
 /**
+ * Resolve a user-supplied local directory path.
+ *
+ * Relative paths resolve against the workspace root, not `process.cwd()`. The
+ * server starts in packages/web, while the CLI and every example in the README
+ * run from the repository root — resolving against cwd made the one path the
+ * dashboard itself recommends, `./fixtures/vulnerable-shop`, fail with "no such
+ * directory" on a first run. An absolute or `~`-expanded path is returned
+ * unchanged by `resolve`.
+ *
+ * Both callers go through this. `projectNameFor` derives the project identity
+ * from the resolved path and `resolveSource` reads it, and the two have to
+ * agree — see the note below on what a mismatch did.
+ */
+function localPath(raw: string): string {
+  return resolve(workspaceRoot(), raw.replace(/^~/, process.env.HOME ?? '~'));
+}
+
+/**
  * The project name this input will be persisted under.
  *
  * Exported because the entitlement check in /api/scans has to resolve the same
@@ -116,13 +134,13 @@ export type ScanInput =
  * used the directory, repository or archive name — the lookup always missed,
  * and a Free account was told to upgrade to re-scan a project it already had.
  *
- * This does no validation and touches no filesystem, so it is safe to call
- * before `resolveSource`.
+ * This does no validation and never throws on a path that does not exist, so
+ * it is safe to call before `resolveSource`.
  */
 export function projectNameFor(input: ScanInput): string {
   if (input.name) return input.name;
   if (input.kind === 'local') {
-    const path = resolve(input.path.replace(/^~/, process.env.HOME ?? '~'));
+    const path = localPath(input.path);
     return path.split('/').filter(Boolean).pop() ?? 'project';
   }
   if (input.kind === 'github') {
@@ -149,7 +167,7 @@ export function projectIdFor(organizationId: string, input: ScanInput): string {
  */
 function resolveSource(input: ScanInput): { source: SourceSpec; projectName: string } {
   if (input.kind === 'local') {
-    const path = resolve(input.path.replace(/^~/, process.env.HOME ?? '~'));
+    const path = localPath(input.path);
     if (!existsSync(path)) {
       throw new ScanRequestInvalid(`no such directory: ${input.path}`);
     }

@@ -32,7 +32,7 @@ Scan options:
   --name <name>        Project display name (default: directory or repo name)
   --project <id>       Project id to attach the scan to (default: derived from the name)
   --out <dir>          Write reports to this directory (default: ./codelens-report)
-  --db <path>          SQLite database path (default: .codelens/codelens.db)
+  --db <path>          SQLite database path (default: $CODELENS_DB, else .codelens/codelens.db)
   --github-token <t>   Token for a private repository (read-only scopes only)
   --format <list>      Comma-separated: exec,tech,json,html,packs  (default: all)
   --agent <name>       Fix Pack prompt format: claude_code | codex | generic (default: claude_code)
@@ -68,6 +68,20 @@ function parseArgs(argv: string[]): Args {
 function str(flags: Args['flags'], key: string): string | undefined {
   const v = flags[key];
   return typeof v === 'string' ? v : undefined;
+}
+
+/**
+ * The database the CLI reads and writes.
+ *
+ * `--db` wins, then `CODELENS_DB`, then the default beside the workspace. The
+ * environment variable was documented in docs/RUNBOOK.md as an override long
+ * before anything read it: an operator who set it — as the container image
+ * does — got a second database created under the process working directory
+ * instead, and CLI scans then never appeared in the web application, with no
+ * error anywhere to explain it.
+ */
+function defaultDbPath(flag: string | undefined): string {
+  return flag ?? process.env.CODELENS_DB ?? '.codelens/codelens.db';
 }
 
 function openDb(path: string): Db {
@@ -129,7 +143,7 @@ async function cmdScan(args: Args): Promise<number> {
 
   // --- persist ---
   if (args.flags['no-save'] !== true) {
-    const dbPath = str(args.flags, 'db') ?? '.codelens/codelens.db';
+    const dbPath = defaultDbPath(str(args.flags, 'db'));
     const db = openDb(dbPath);
     try {
       saveScan(db, outcome, { organizationId: 'local', projectId, projectName });
@@ -287,7 +301,7 @@ async function cmdEval(args: Args): Promise<number> {
 }
 
 function cmdList(args: Args): number {
-  const db = openDb(str(args.flags, 'db') ?? '.codelens/codelens.db');
+  const db = openDb(defaultDbPath(str(args.flags, 'db')));
   try {
     const projectId = str(args.flags, 'project');
     const projects = projectId
@@ -318,7 +332,7 @@ function cmdCompare(args: Args): number {
     console.error(HELP);
     return 2;
   }
-  const db = openDb(str(args.flags, 'db') ?? '.codelens/codelens.db');
+  const db = openDb(defaultDbPath(str(args.flags, 'db')));
   try {
     const base = loadScanSide(db, baseId);
     const head = loadScanSide(db, headId);

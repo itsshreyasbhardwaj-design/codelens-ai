@@ -59,7 +59,7 @@ export function AuthForm({ next }: { next?: string }) {
               border: '1px solid var(--border)',
               background: mode === m ? 'var(--surface-3)' : 'transparent',
               color: mode === m ? 'var(--ink)' : 'var(--ink-3)',
-              fontWeight: mode === m ? 600 : 500, font: 'inherit', fontSize: '0.86rem',
+              font: 'inherit', fontSize: '0.86rem', fontWeight: mode === m ? 600 : 500,
             }}
           >
             {m === 'signin' ? 'Sign in' : 'Create account'}
@@ -109,7 +109,7 @@ export function AuthForm({ next }: { next?: string }) {
         style={{
           padding: '0.5rem', borderRadius: 6, border: '1px solid var(--accent)',
           background: 'var(--accent)', color: 'var(--accent-ink)',
-          fontWeight: 600, cursor: busy ? 'progress' : 'pointer', font: 'inherit', fontSize: '0.9rem',
+          cursor: busy ? 'progress' : 'pointer', font: 'inherit', fontSize: '0.9rem', fontWeight: 600,
           opacity: busy ? 0.7 : 1,
         }}
       >

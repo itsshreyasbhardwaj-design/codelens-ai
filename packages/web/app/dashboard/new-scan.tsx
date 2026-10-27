@@ -1,6 +1,7 @@
 'use client';
 
 import Link from 'next/link';
+import { useRouter } from 'next/navigation';
 import { useEffect, useRef, useState, type FormEvent } from 'react';
 
 /**
@@ -131,6 +132,7 @@ export function NewScan() {
   const [cancelling, setCancelling] = useState(false);
 
   const fileInput = useRef<HTMLInputElement>(null);
+  const router = useRouter();
 
   useEffect(() => {
     if (!jobId) return;
@@ -155,7 +157,17 @@ export function NewScan() {
         if (stopped) return;
         setJob(next);
         setPollError(null);
-        if (!next.finishedAt) timer = setTimeout(tick, 1000);
+        if (!next.finishedAt) {
+          timer = setTimeout(tick, 1000);
+        } else {
+          // The project list on this page is server-rendered, and polling is the
+          // only thing that knows the scan ended. Without this the first run
+          // leaves a completed scan with 90 findings sitting directly above
+          // "Nothing has been scanned in this installation". The page is
+          // force-dynamic, so a refresh re-reads the database; client state —
+          // this panel included — survives it.
+          router.refresh();
+        }
       } catch (e) {
         if (stopped) return;
         setPollError(`${e instanceof Error ? e.message : 'Progress could not be read'}. Retrying.`);
@@ -168,7 +180,7 @@ export function NewScan() {
       stopped = true;
       if (timer) clearTimeout(timer);
     };
-  }, [jobId]);
+  }, [jobId, router]);
 
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -449,7 +461,8 @@ export function NewScan() {
             style={inputStyle}
           />
           <p id="scan-path-hint" style={hintStyle}>
-            A directory on this machine, absolute or relative to where the server was started. A leading{' '}
+            A directory on this machine, absolute or relative to the installation root — the repository root in a
+            checkout. A leading{' '}
             <code style={{ fontFamily: 'var(--font-mono)' }}>~</code> is expanded.
           </p>
         </div>

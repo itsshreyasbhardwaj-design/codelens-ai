@@ -16,10 +16,14 @@ of the current implementation, stated so reports are not over-read.
 - **It cannot see your infrastructure or cloud bill.** Cost findings are
   structural (duplicate services, unbounded queries, inefficient AI calls). No
   dollar figure is produced without billing data.
-- **A deployed URL reveals only what a client can observe.** Website mode reads
-  headers, TLS, page metadata, and client-side signals. It cannot see your
-  backend, schema, or source. Those findings are tagged `source: website` and are
-  never merged into source-code architecture.
+- **It cannot look at a deployed URL at all.** Website observation mode is
+  **not implemented in this release** (`docs/SUPPORTED.md`, `docs/STATUS.md`).
+  The three ingestion methods that exist are a local directory, a GitHub
+  repository and a ZIP. The data model reserves `projects.kind = 'website'` and
+  `source_kind = 'url' | 'website'` for the mode, and nothing writes either
+  value. When it is built it will read only what a client can observe — headers,
+  TLS, page metadata, client-side signals — never your backend, schema or
+  source.
 
 ## Coverage is reported, not assumed
 

@@ -78,7 +78,7 @@ requires moving to PostgreSQL first — the reversal path is in ADR-001 and
 | | |
 | --- | --- |
 | Docker | 23 or newer. The Dockerfile uses BuildKit cache mounts, which older Docker does not understand. |
-| A persistent volume | 10 GB is a reasonable start. Snapshots and scan results accumulate; `CODELENS_RETENTION_DAYS` prunes them. |
+| A persistent volume | Snapshots and scan results accumulate and **nothing prunes them automatically**. Budget from your own scan rate: the demo project's 24 files cost about 2.4 MB of database per scan. 10 GB is a reasonable start; watch it and prune by hand (`docs/RUNBOOK.md`). |
 | CPU | Two cores minimum. One scan will saturate a core and starve the dashboard. |
 | Memory | 2 GB minimum, 4 GB if you expect concurrent scans. |
 | A secret | 32+ characters for `CODELENS_SECRET_KEY`. Without it the application refuses to issue sessions, so nobody can sign in. |
@@ -103,8 +103,8 @@ Authoritative list is `.env.example`. Every variable there is optional **except*
 
 | Variable | Default | Notes |
 | --- | --- | --- |
-| `CODELENS_HOME` | `/data/codelens` in the image | Working directory for snapshots and artefacts. Keep it on the volume. |
-| `CODELENS_RETENTION_DAYS` | `30` | How long scan data is kept. |
+| ~~`CODELENS_HOME`~~ | — | **Read by nothing.** Snapshots are rows in the database, not files in a directory, so there is no working directory to place. It is still set in the image and `fly.toml`; setting it has no effect. |
+| ~~`CODELENS_RETENTION_DAYS`~~ | — | **Read by nothing, and no retention is implemented.** No code path deletes a snapshot, scan or finding — there is not a single `DELETE` in the application. `organizations.retention_days` and `repository_snapshots.expires_at` exist in the schema and are never read or written. Prune by hand; see `docs/RUNBOOK.md`. |
 | `CODELENS_AI_PROVIDER` | `none` | `none`, `ollama`, `anthropic`, `openai`. Default is deterministic analysis only: no network, no cost. |
 | `CODELENS_AI_MODEL` | provider default | |
 | `CODELENS_OLLAMA_URL` | `http://127.0.0.1:11434` | Only for `ollama`. |

@@ -153,9 +153,11 @@ function DemoPreview() {
           Sample report {synthetic}
         </SectionHeading>
         <p style={{ margin: 0, fontSize: '0.88rem', color: 'var(--ink-2)' }}>
-          Scan the bundled defective demo project to populate it: enter{' '}
-          <code style={{ fontFamily: 'var(--font-mono)' }}>{DEMO_FIXTURE_PATH}</code> as a local directory path on the{' '}
-          <Link href="/dashboard#new-scan">dashboard</Link>.
+          Scan the bundled defective demo project to populate it: run{' '}
+          <code style={{ fontFamily: 'var(--font-mono)' }}>pnpm scan {DEMO_FIXTURE_PATH}</code> from the repository
+          root. This panel is public, so it reads the CLI&rsquo;s own organisation — a scan started from the{' '}
+          <Link href="/dashboard#new-scan">dashboard</Link> belongs to your account instead and will not appear
+          here.
         </p>
       </Card>
     );
@@ -514,7 +516,8 @@ export default function LandingPage() {
               Scan something
             </h2>
             <p style={{ margin: '0.25rem 0 0', fontSize: '0.88rem', color: 'var(--ink-2)' }}>
-              A directory, a repository, or an archive. No account, no key, no configuration.
+              A directory, a repository, or an archive. Create an account and scan — no AI provider key, and
+              nothing leaves the machine.
             </p>
           </div>
           <Link href="/dashboard" style={ctaStyle(true)}>
@@ -524,8 +527,8 @@ export default function LandingPage() {
 
         <footer style={{ fontSize: '0.82rem', color: 'var(--ink-3)', paddingTop: '0.5rem' }}>
           <p style={{ margin: 0 }}>
-            This release runs single-tenant and local. Authentication is deliberately not implemented, and{' '}
-            {pluralize(ALL_ANALYZERS.length, 'analyzer')} are installed.
+            This release is self-hosted and runs as a single process. Each account gets its own organisation and
+            sees only its own projects; {pluralize(ALL_ANALYZERS.length, 'analyzer')} are installed.
           </p>
         </footer>
       </Shell>

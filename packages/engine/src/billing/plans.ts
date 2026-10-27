@@ -79,7 +79,7 @@ export const DEFAULT_PLANS: PlanSpec[] = [
     sortOrder: 4,
     features: [
       'Everything in Team',
-      'Custom limits, seats and retention',
+      'Custom limits, seats and support terms',
       'Self-hosted or private deployment',
       'Bring your own model provider',
     ],

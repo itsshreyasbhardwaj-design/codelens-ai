@@ -12,9 +12,10 @@ import { recoverOrphanedScans } from '@codelens/engine/billing/credits.ts';
  * raises the same "not found" error for a project in another tenant as for one
  * that does not exist. Existence is not leaked across tenants.
  *
- * This release runs single-tenant and local: the organisation is fixed, and
- * authentication is intentionally not implemented. That is stated in the UI
- * rather than faked — see docs/LIMITATIONS.md.
+ * Authentication is implemented and enforced: `packages/web/middleware.ts`
+ * rejects an unauthenticated request before it reaches a page, and every read
+ * here is scoped by the organisation resolved from the signed session. The
+ * `LOCAL_ORG` constant below is the CLI's organisation only.
  */
 
 /**
@@ -27,13 +28,17 @@ export const LOCAL_ORG = 'local';
 /**
  * Locate the workspace root.
  *
- * A relative database path must not resolve against the process working
- * directory: the CLI runs from the repository root and writes there, while the
- * Next server runs from packages/web. Resolving relative would have the web app
- * looking in a different place from the tool that populates it, and the symptom
- * is an empty dashboard with no error.
+ * A relative path must not resolve against the process working directory: the
+ * CLI runs from the repository root, while the Next server runs from
+ * packages/web. Resolving relative would have the web app looking in a
+ * different place from the tool that populates it, and the symptom is an empty
+ * dashboard with no error.
+ *
+ * Exported because scan source paths need the same base as the database. The
+ * container image copies pnpm-workspace.yaml to /app, so this is well defined
+ * there too.
  */
-function workspaceRoot(): string {
+export function workspaceRoot(): string {
   let dir = process.cwd();
   for (let i = 0; i < 6; i++) {
     if (existsSync(join(dir, 'pnpm-workspace.yaml'))) return dir;

@@ -28,7 +28,7 @@ deterministic analysis only. See `.env.example`.
 | `CODELENS_OLLAMA_URL` | `http://127.0.0.1:11434` | local model endpoint |
 | `CODELENS_SECRET_KEY` | unset | 32+ chars. **Required by the web app** to sign sessions, and to store provider tokens at all |
 | `CODELENS_DB` | `.codelens/codelens.db` | database path |
-| `CODELENS_RETENTION_DAYS` | `30` | artifact retention |
+| ~~`CODELENS_RETENTION_DAYS`~~ | — | read by nothing; no retention is implemented (see below) |
 | `GITHUB_TOKEN` | unset | read-only token for private repositories |
 | `CODELENS_DYNAMIC_VERIFY` | `off` | see the limitation below |
 
@@ -129,8 +129,47 @@ UNION ALL SELECT 'scans', COUNT(*) FROM scan_jobs WHERE project_id = ?
 UNION ALL SELECT 'snapshots', COUNT(*) FROM repository_snapshots WHERE project_id = ?;
 ```
 
-Set `CODELENS_RETENTION_DAYS` and prune snapshots past
-`repository_snapshots.expires_at`. Derived analysis is removed with its scan.
+**Nothing is pruned automatically.** There is no retention job, no cron and no
+`DELETE` anywhere in the application; `CODELENS_RETENTION_DAYS`,
+`organizations.retention_days` and `repository_snapshots.expires_at` are all
+vestigial — `expires_at` is never written, so it is `NULL` on every row and a
+prune keyed on it would match nothing and report success.
+
+Prune by hand, by snapshot. `scan_jobs.snapshot_id` is
+`ON DELETE CASCADE` (`schema.sql`), so deleting a snapshot takes its scans and
+every derived table — findings, evidence, stages, scores, Fix Packs — with it.
+One statement is enough.
+
+Three details, each of which has been tested on a real database and each of
+which silently does the wrong thing if you skip it:
+
+1. **Compare with `julianday()`, not with `datetime()`.** Timestamps are stored
+   as ISO-8601 with a `T` and a `Z` (`2026-10-27T05:15:49.438Z`), while
+   `datetime('now','-30 days')` returns `2026-09-27 06:07:17` — a *string*
+   comparison between the two is wrong whenever the date part matches, because
+   `T` sorts after a space. `julianday()` parses the stored form correctly.
+2. **In the `sqlite3` CLI, turn foreign keys on first.** The CLI defaults to
+   `PRAGMA foreign_keys = 0`, and the delete below then removes the snapshot and
+   **leaves its scans and findings orphaned** — observed: `snapshots=0` with
+   `scans=1, findings=90` still present. `node:sqlite` has them on already.
+3. **Back up with `VACUUM INTO` first** (see above), not by copying
+   `codelens.db`. The main file can be 4 KB with everything in the WAL; a copy
+   of it alone opens as an empty database that reports no such table.
+
+```sql
+PRAGMA foreign_keys = ON;   -- required in the sqlite3 CLI; see note 2
+
+-- What a 30-day prune would remove
+SELECT COUNT(*) AS snapshots FROM repository_snapshots
+ WHERE julianday(ingested_at) < julianday('now') - 30;
+
+DELETE FROM repository_snapshots
+ WHERE julianday(ingested_at) < julianday('now') - 30;
+
+VACUUM;                     -- or the file does not shrink
+```
+
+This is unrecoverable: there is no `down` migration and no undo.
 
 ## Reading a scan correctly
 
