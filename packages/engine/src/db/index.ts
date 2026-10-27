@@ -13,7 +13,7 @@ import { fileURLToPath } from 'node:url';
  */
 
 const HERE = dirname(fileURLToPath(import.meta.url));
-export const SCHEMA_VERSION = 3;
+export const SCHEMA_VERSION = 4;
 
 /**
  * Migrations beyond the baseline, in order. Adding one means adding a file in
@@ -23,6 +23,7 @@ export const SCHEMA_VERSION = 3;
 const MIGRATIONS: Array<{ version: number; file: string }> = [
   { version: 2, file: '002_billing.sql' },
   { version: 3, file: '003_subscription_ended.sql' },
+  { version: 4, file: '004_scan_billable.sql' },
 ];
 
 function pendingMigrations(applied: Set<number>): Array<{ version: number; file: string }> {

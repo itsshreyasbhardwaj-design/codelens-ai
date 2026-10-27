@@ -24,12 +24,25 @@ export interface LimitCheck {
 const ALLOWED: LimitCheck = { allowed: true };
 
 /** Scans this organisation started in the current calendar month. */
+/**
+ * Scans charged to this organisation in the calendar month of `atIso`.
+ *
+ * `billable = 0` rows are excluded: a failed scan delivered nothing, and
+ * charging for it contradicted `HOLDS_SLOT` below, which already refuses to
+ * let the same scan hold a project slot. `failScan` sets the flag; the column
+ * defaults to 1 so anything that has not explicitly opted out is counted.
+ *
+ * `usageSummary` reads this same function, so the gate and the figure on the
+ * billing page cannot drift apart — a divergence between two scan queries is
+ * what the note on `HOLDS_SLOT` was written about.
+ */
 export function scansThisMonth(db: Db, organizationId: string, atIso: string): number {
   const period = atIso.slice(0, 7);
   const row = db.get<{ n: number }>(
     `SELECT COUNT(*) AS n FROM scan_jobs s
        JOIN projects p ON p.id = s.project_id
-      WHERE p.organization_id = ? AND substr(s.queued_at, 1, 7) = ?`,
+      WHERE p.organization_id = ? AND substr(s.queued_at, 1, 7) = ?
+        AND s.billable = 1`,
     organizationId, period,
   );
   return Number(row?.n ?? 0);

@@ -8,7 +8,7 @@ import {
 } from './credits.ts';
 import {
   canAddSeat, canCreateProject, canStartScan, canUseAi, creditsForUsage, holdsProjectSlot, projectCount,
-  estimateScanCredits, tokensForCredits, usageSummary,
+  estimateScanCredits, scansThisMonth, tokensForCredits, usageSummary,
 } from './entitlements.ts';
 import { DEFAULT_PLANS, listPlans, planByCode, planForOrganization, seedPlans } from './plans.ts';
 import { applyWebhookEvent } from './payments.ts';
@@ -775,5 +775,79 @@ describe('the monthly allowance survives a month rollover', () => {
     t.after(() => db.close());
 
     assert.throws(() => grantMonthlyAllowance(db, account.organizationId, '2026-11-01T09:00:00.000Z'), /seedPlans/);
+  });
+});
+
+describe('a scan that delivered nothing is not charged for', () => {
+  function startedScan(db: Db, org: string, id: string): void {
+    beginScan(db, id, {
+      organizationId: org, projectId: `${org}:${id}`, projectName: id, slug: id,
+    });
+  }
+
+  it('does not spend the monthly allowance on a failed scan', (t) => {
+    const { db, org } = setup();
+    t.after(() => db.close());
+    const at = new Date().toISOString();
+
+    // The reachable path: a misspelled or private GitHub reference passes
+    // parseRepoRef, beginScan writes the row, and ingestion then 404s. Two of
+    // those used to lock a Free account out of its two scans until the 1st.
+    startedScan(db, org, 'a');
+    failScan(db, 'a', 'failed', 'repository not found');
+    startedScan(db, org, 'b');
+    failScan(db, 'b', 'failed', 'repository not found');
+
+    assert.equal(scansThisMonth(db, org, at), 0, 'neither failure is charged');
+    assert.equal(canStartScan(db, org, { atIso: at }).allowed, true, 'the account is not locked out');
+  });
+
+  it('agrees with the project-slot rule it used to contradict', (t) => {
+    const { db, org } = setup();
+    t.after(() => db.close());
+    startedScan(db, org, 'a');
+    failScan(db, 'a', 'failed', 'repository not found');
+
+    // Before this, the same row held no project slot yet still spent an
+    // allowance: the product charged for a scan it agreed produced nothing.
+    assert.equal(holdsProjectSlot(db, org, `${org}:a`), false);
+    assert.equal(scansThisMonth(db, org, new Date().toISOString()), 0);
+  });
+
+  it('still charges for a scan the customer cancelled', (t) => {
+    const { db, org } = setup();
+    t.after(() => db.close());
+    const at = new Date().toISOString();
+    startedScan(db, org, 'a');
+    failScan(db, 'a', 'cancelled');
+
+    // Deliberate asymmetry. One cancelled at the end consumed the same
+    // analysis as one that finished, so making it free would turn "cancel at
+    // 99%" into unmetered scanning.
+    assert.equal(scansThisMonth(db, org, at), 1);
+  });
+
+  it('shows the billing page the same number the gate uses', (t) => {
+    const { db, org } = setup();
+    t.after(() => db.close());
+    const at = new Date().toISOString();
+    startedScan(db, org, 'a');
+    failScan(db, 'a', 'failed', 'repository not found');
+    startedScan(db, org, 'b');
+    failScan(db, 'b', 'cancelled');
+
+    // usageSummary reads scansThisMonth, so a divergence here would be the
+    // same class of bug as the project-limit exemption that disagreed with the
+    // slot rule.
+    assert.equal(usageSummary(db, org, at).scans.used, scansThisMonth(db, org, at));
+    assert.equal(usageSummary(db, org, at).scans.used, 1, 'the cancelled one only');
+  });
+
+  it('counts a scan that is still running, so two cannot start at once', (t) => {
+    const { db, org } = setup();
+    t.after(() => db.close());
+    startedScan(db, org, 'a');
+    // beginScan leaves it running and billable; nothing has decided otherwise.
+    assert.equal(scansThisMonth(db, org, new Date().toISOString()), 1);
   });
 });

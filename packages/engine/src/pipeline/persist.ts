@@ -109,10 +109,16 @@ export function beginScan(db: Db, scanId: string, opts: SaveOptions): void {
 export function failScan(
   db: Db, scanId: string, status: 'failed' | 'cancelled', errorMessage?: string,
 ): void {
+  // A failed scan stops being billable here rather than at the call sites.
+  // Every caller of this function means the same thing — the pipeline did not
+  // finish, so `saveScan` was never reached and nothing was stored — and
+  // deriving it from the status that is already an argument means a future
+  // failure path cannot forget to do it. `cancelled` stays billable: see
+  // migrations/004_scan_billable.sql for why that asymmetry is deliberate.
   db.run(
-    `UPDATE scan_jobs SET status = ?, error_message = ?, finished_at = ?
+    `UPDATE scan_jobs SET status = ?, error_message = ?, finished_at = ?, billable = ?
       WHERE id = ? AND finished_at IS NULL`,
-    status, errorMessage ?? null, now(), scanId,
+    status, errorMessage ?? null, now(), status === 'failed' ? 0 : 1, scanId,
   );
 }
 

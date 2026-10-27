@@ -233,7 +233,7 @@ platform holds traffic off the machine for exactly that window. The schema
 version and the pending list are in the response:
 
 ```json
-"schema": { "applied": [1, 2], "pending": [], "current": 2 }
+"schema": { "applied": [1, 2, 3, 4], "pending": [], "current": 4 }
 ```
 
 A migration that fails throws, the transaction rolls back, and the endpoint
