@@ -559,6 +559,137 @@ known gap did not matter. The reasoning was recorded honestly and was still
 wrong, which is a good argument for treating "good enough, and here is why" as
 something to revisit rather than something settled.
 
+## A ninth round: the first one to run the product from nothing
+
+Eight rounds read the code. This one booted it twice against a guaranteed-empty
+database and walked the path a new account walks — migrate, seed, register,
+scan, open Billing. The boot itself was sound: every migration applied to a new
+file, 39 tables, the five plans seeded, every other table empty, and the monthly
+allowance granted exactly once across registration and opening Billing, which is
+the eighth round's fix holding on an organisation that had never existed before.
+Six defects turned up anyway, and they share one property — not one of them is
+visible in the source.
+
+- **The first thing the product tells a new user to do did not work.** Three
+  places say to enter `./fixtures/vulnerable-shop`: the landing page, the
+  dashboard's empty state, and the scan form's own placeholder. It answered `no
+  such directory`. `resolveSource` resolved it against `process.cwd()`, which is
+  `packages/web`, while the fixture and every README example live at the
+  repository root. `store.ts` already had `workspaceRoot()`, written for exactly
+  this mismatch, with a comment explaining that the CLI runs from the root and
+  the Next server does not. The patch refused to apply at first because the same
+  resolution appears *twice*, in `projectNameFor` and `resolveSource`, and those
+  two have to agree — a divergence between them is what once told a Free account
+  to upgrade to re-scan a project it already had. One shared helper now.
+- **The dashboard contradicted itself on the first scan.** "Completed — 90
+  findings, 9 of them critical, and 16 Fix Packs" rendered directly above "No
+  projects yet. Nothing has been scanned in this installation." The project list
+  is server-rendered and polling was the only thing that knew the scan had ended.
+- **Three claims on the public landing page were false.** It told every visitor
+  "Authentication is deliberately not implemented" on a commit where
+  `middleware.ts` enforces it. The call to action promised "No account, no key,
+  no configuration" for a flow that needs both an account and a 32-character
+  key. And the sample-report panel's instruction could never populate it: the
+  panel reads the CLI's organisation, while the instruction pointed at the
+  dashboard, which writes under the signed-in account. `store.ts` carried the
+  same stale authentication claim in its own header.
+- **Retention did not exist and four documents said it did.** Nothing reads
+  `CODELENS_RETENTION_DAYS` or `organizations.retention_days`, nothing writes
+  `repository_snapshots.expires_at`, there is no `DELETE` anywhere in the
+  application, and no cleanup process. The Enterprise tier sold "retention".
+  Worse, the runbook's prune keyed on `expires_at`, which is `NULL` on every
+  row, so an operator following it would have deleted nothing and been told it
+  succeeded. The claims are corrected rather than the feature built — deciding
+  what to delete is the owner's call. Writing the replacement procedure needed
+  three things tested rather than assumed: `julianday()` parses the stored ISO
+  form while a string comparison against `datetime('now')` does not; the
+  `sqlite3` CLI defaults `foreign_keys` to 0 and left `scans=1, findings=90`
+  orphaned behind a snapshot delete; and a backup must use `VACUUM INTO`,
+  because a plain copy of `codelens.db` opened as an empty database — this
+  document's own three-file warning, demonstrated by accident.
+- **The sign-in tabs rendered at the wrong weight.** `font: 'inherit'` was
+  written *after* `fontWeight` in the same style object, so the shorthand
+  discarded it: both tabs and the submit button computed to 400 where 600 and
+  500 were intended. Fourteen other sites put the shorthand first and are fine.
+
+**Then four leads from a parallel audit, all four real.** Each was reproduced in
+isolation and then attacked by a second pass told to refute it. None fell, though
+two had their severity corrected downward.
+
+- **No `busy_timeout`.** The constructor set `foreign_keys` and `journal_mode`
+  and nothing else, so SQLite's default of 0 stood: measured here, a contending
+  write failed in **0.9 ms** with errcode 5, where with a timeout it waits
+  **1.1 s** for the holder and succeeds. That is reachable from the flow the
+  README and the landing page both recommend — `pnpm scan` from the repository
+  root while the dev server holds the same file — which this round had just made
+  *more* likely by fixing the instruction. The pragma is deliberately not licence
+  to open two connections in one process: `node:sqlite` is synchronous, so a
+  blocked call owns the only thread, the holder never reaches `COMMIT`, and the
+  wait merely expires later.
+- **A lock error destroyed the reports too.** The CLI persisted before writing
+  reports, with no catch, so contention discarded a completed scan *and* every
+  report file. The reports are pure functions of the outcome and need no
+  database. The error is now held, the files are written, and it is rethrown so
+  the exit code still says the scan was not stored.
+- **Registration committed before it could fail.** The account and the first
+  month's credits were written, then the session was issued — the only step that
+  can fail on configuration. With no key the caller got a 503 while a working
+  account already existed, and the natural retry answered "email taken".
+  `register` was already transactional, so there was never a half-made account,
+  only a misleading failure. The 32-character floor is now exported once rather
+  than restated in the health route.
+- **We ingested our own database.** `.codelens` was not excluded, so scanning a
+  project that uses CodeLens pulled CodeLens's database in as project content.
+  Nothing was mis-analysed — the WAL sidecars sniff as binary on the NUL check,
+  so they are assets and never parsed — but the bytes counted toward the snapshot
+  and toward the plan's megabyte ceiling, and grew with every scan. On this
+  repository that is 18 MB of database against 3.68 MB of actual source.
+  `codelens-report` is excluded for the same reason.
+
+The last lead was held back deliberately and then fixed when the owner decided
+it: failed and cancelled scans counted against the monthly allowance while
+holding no project slot, because `scansThisMonth` had no status predicate while
+`HOLDS_SLOT` directly below it did. The product charged for a scan it
+simultaneously agreed had produced nothing. Migration 004 adds
+`scan_jobs.billable`, defaulting to 1 so billing is the fail-closed case and a
+new failure path has to opt out deliberately. `cancelled` stays billable: one
+cancelled at the end consumed the same analysis as one that finished, and making
+it free would turn "cancel at 99%" into unmetered scanning.
+
+Three lessons, in increasing order of what they cost to learn.
+
+**CI cannot find this class of defect, structurally.** `scan our own repository`
+passed before and after the self-ingest fix and could not have failed: a fresh
+checkout has no `.codelens/` to ingest, because it is gitignored. The job that
+should have caught it is incapable of doing so, and the point generalises — the
+pipeline tests a repository, not an installation.
+
+**A written record of why something was removed prevented a regression.** The
+audit's strongest-looking finding was that the plan's repository-size ceiling is
+never pre-checked. It is not — and the seventh round above removed that
+pre-check *on purpose*, because passing compressed bytes as the plan size
+refused a valid 54 MB archive that normalised to a few dozen bytes. Without that
+paragraph the "fix" would have reinstated the bug. Half of the same finding was
+simply false: a failed scan holds no project slot, which the seventh round had
+already settled.
+
+**A test that can only pass is worse than no test.** The first migration checks
+here printed `versions: [1,2,3,4]` and a present `billable` column, and proved
+nothing — `node -e 'script' -- path` puts the path at `argv[1]`, so reading
+`argv[2]` gave `new Db(undefined)`, which defaults to `':memory:'`. The run
+migrated an in-memory database and printed exactly what a successful file
+migration prints; the file was never created. The same confusion returned an
+hour later in a different costume, with a script file, where `argv[2]` *is* the
+first argument — two processes silently opened different paths and the result
+read as a missing table. Both were caught only by inspecting the artefact
+instead of trusting the output, which is now the rule: a test that touches a file
+prints the path it opened.
+
+Not covered, and worth stating plainly: the path fix has no automated test.
+`runner.ts` begins with `import 'server-only'` and there are no tests under
+`packages/web`, so `node --test` cannot import it. It is guarded only by the
+live rehearsal.
+
 ## Self-audit false positives, found and fixed
 
 Running CodeLens on CodeLens reported two `critical` / `confirmed` SQL injection
