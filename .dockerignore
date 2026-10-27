@@ -1,0 +1,61 @@
+# Build context exclusions.
+#
+# Two jobs here: keep the context small, and make it impossible for a secret to
+# be copied into a layer. The .env rules are the second job and are the reason
+# this file is not optional — a `COPY . .` with a .env present bakes the signing
+# key and any provider token into the image, where `docker history` will show it.
+
+# Dependencies and build output are produced inside the image, never copied in.
+# A host node_modules is also the wrong platform: these are macOS binaries.
+node_modules
+**/node_modules
+.next
+**/.next
+dist
+**/dist
+*.tsbuildinfo
+**/*.tsbuildinfo
+
+# Secrets. `.env*` covers .env, .env.local, .env.production and .env.example.
+# The example file is documentation, not configuration, and is read from the
+# repository rather than the image.
+.env
+.env.*
+**/.env
+**/.env.*
+
+# Local state. .codelens is the developer's own SQLite database — scan results
+# for whatever they have analysed. It must never ship inside an image.
+.codelens
+**/.codelens
+*.log
+**/*.log
+
+# Generated reports. Large, and they describe someone's private codebase.
+codelens-report
+**/codelens-report
+docs/sample-report
+
+# Repository and tooling metadata the runtime has no use for.
+.git
+.gitignore
+.github
+.claude
+.DS_Store
+**/.DS_Store
+
+# Docs and meta. The deployment guide is read from the repository, not the image.
+docs
+*.md
+**/*.md
+
+# Test fixtures. `fixtures/vulnerable-shop` deliberately contains a planted .env
+# and planted vulnerabilities; it is input for `pnpm eval`, which the image does
+# not run.
+fixtures
+
+# The build context does not need the deployment descriptors themselves.
+Dockerfile
+.dockerignore
+docker-compose.yml
+fly.toml

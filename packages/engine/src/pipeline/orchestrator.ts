@@ -21,6 +21,7 @@ import type { Analyzer } from '../analyzers/types.ts';
 import { detectInjectionAttempts } from '../ai/safety.ts';
 import { ModelClient, loadAiConfig, type AiConfig } from '../ai/provider.ts';
 import { investigate, type InvestigationReport } from '../ai/investigate.ts';
+import { selectTargets } from '../ai/retrieval.ts';
 import { buildFixPacks, type FixPack } from '../fixpacks/grouping.ts';
 import { generateFixPackPrompt, type AgentFormat, type PromptContext } from '../fixpacks/prompt.ts';
 import { validateFixPack, type ValidationResult } from '../fixpacks/validate.ts';
@@ -51,14 +52,66 @@ export interface ScanRequest {
   source: SourceSpec;
   analyzers: Analyzer[];
   limits?: IngestLimits;
+  /**
+   * Plan ceiling on ANALYSED source bytes; null or undefined means unbounded.
+   *
+   * Checked after normalisation, which is the first point the real number is
+   * known: a compressed upload size is not the repository size, and the
+   * pre-exclusion byte count is not the analysed size — a repository that is
+   * mostly `node_modules` normalises to a fraction of what it ingests.
+   *
+   * Deliberately separate from `limits`, which is a safety bound on what may be
+   * ingested at all. A plan limit and a decompression-bomb guard are different
+   * things and must not share a field.
+   */
+  maxSourceBytes?: number | null;
   aiConfig?: AiConfig;
   /** Explicitly authorised dynamic verification. Off unless set. */
   dynamicVerify?: { enabled: boolean; reason?: string };
   /** Resubmitting the same key must not start a second scan. */
   idempotencyKey?: string;
+  /**
+   * Credit metering for the AI layer only.
+   *
+   * Passed in as functions rather than a database handle so the orchestrator
+   * stays storage-agnostic and testable without a billing schema. Omitting it
+   * runs the AI layer unmetered, which is what the CLI and the test suite want.
+   * Deterministic analysis is never metered: see `canUseAi`.
+   */
+  aiCredits?: AiCreditHooks;
   /** Checked between stages. */
   isCancelled?: () => boolean;
   onStageChange?: (stage: StageResult) => void;
+}
+
+export interface AiCreditHooks {
+  /**
+   * Ceiling to hold, in credits, for this scan.
+   *
+   * `targets` is how many investigations the AI stage will actually run, which
+   * is known from the repository map before the stage starts. Estimating from
+   * file count alone under-counted small, route-dense repositories by 4x.
+   */
+  estimate(input: { files: number; targets: number }): number;
+  /**
+   * Hold the ceiling, or refuse with a reason the user can act on.
+   *
+   * `tokenCeiling` is what the held credits actually fund at the caller's
+   * pricing. The stage is capped to it: `settle` clamps the CHARGE to the
+   * reservation, so a stage free to spend beyond it spends money nobody is
+   * ever billed for.
+   */
+  reserve(amount: number, scanId: string):
+    | { ok: true; reservationId: string; tokenCeiling: number }
+    | { ok: false; reason: string };
+  /**
+   * Charge metered usage and return the unused remainder.
+   *
+   * Zero usage returns the whole hold, so there is no separate release hook.
+   * A hold left behind by a crashed process is recovered by
+   * `releaseStaleReservations`, not from here.
+   */
+  settle(reservationId: string, tokensIn: number, tokensOut: number): void;
 }
 
 export interface ScanOutcome {
@@ -198,6 +251,21 @@ export async function runScan(req: ScanRequest): Promise<ScanOutcome> {
     return outcome;
   }
   outcome.snapshot = snapshot;
+
+  // The plan ceiling, applied to what will actually be analysed. Before this,
+  // the limit was checked against the compressed upload for a ZIP and not at
+  // all for a local directory or a GitHub repository.
+  if (req.maxSourceBytes != null && snapshot.totalBytes > req.maxSourceBytes) {
+    const mb = (n: number) => Math.round(n / 1_000_000);
+    outcome.status = 'failed';
+    outcome.errorMessage =
+      `this repository holds ${mb(snapshot.totalBytes)} MB of analysable source, and the plan `
+      + `analyses up to ${mb(req.maxSourceBytes)} MB. Upgrade, or scan a smaller subtree.`;
+    for (const spec of STAGE_SPECS.slice(2)) tracker.skip(spec.name, outcome.errorMessage);
+    outcome.stages = tracker.all();
+    return outcome;
+  }
+
   if (cancelled()) return cancelRemaining();
 
   // --------------------------------------------- 3. technology detection ----
@@ -287,19 +355,62 @@ export async function runScan(req: ScanRequest): Promise<ScanOutcome> {
   if (cancelled()) return cancelRemaining();
 
   // ----------------------------------------- 8. AI semantic investigation ---
-  const client = new ModelClient(aiConfig);
-  const aiUnavailable = client.unavailableReason();
-  if (aiUnavailable) {
-    tracker.skip('ai_semantic_investigation', aiUnavailable);
+  // Availability is a property of the configuration alone, so it is settled
+  // before the client the stage will use exists — that client's budget depends
+  // on what the reservation funds.
+  const aiUnavailable = new ModelClient(aiConfig).unavailableReason();
+
+  // Credits are held before the layer runs and settled against metered usage
+  // after it. A refusal skips this one stage with the reason: the other eleven
+  // have already done their work and the scan is still worth delivering.
+  let reservationId: string | undefined;
+  let creditRefusal: string | undefined;
+  let tokenCeiling = aiConfig.tokenBudget;
+  // How many investigations the stage will really run. Taken from the same
+  // function the stage uses, so the estimate, the reservation and the work are
+  // one number.
+  const plannedTargets = selectTargets(map, 8).length;
+  if (!aiUnavailable && req.aiCredits) {
+    const ceiling = req.aiCredits.estimate({ files: snapshot.files.length, targets: plannedTargets });
+    if (ceiling > 0) {
+      const held = req.aiCredits.reserve(ceiling, scanId);
+      if (held.ok) {
+        reservationId = held.reservationId;
+        tokenCeiling = Math.min(tokenCeiling, held.tokenCeiling);
+      } else {
+        creditRefusal = held.reason;
+      }
+    }
+  }
+  const client = new ModelClient({ ...aiConfig, tokenBudget: tokenCeiling });
+
+  if (aiUnavailable ?? creditRefusal) {
+    tracker.skip('ai_semantic_investigation', aiUnavailable ?? creditRefusal!);
     emit('ai_semantic_investigation');
   } else {
-    const aiReport = await runStage('ai_semantic_investigation', () => investigate(map, client));
+    // Planned to fit the budget rather than cut off part-way through it.
+    const aiReport = await runStage('ai_semantic_investigation', () =>
+      investigate(map, client, { maxTargets: plannedTargets }));
     if (aiReport) {
       outcome.aiReport = aiReport;
       allFindings.push(...aiReport.findings);
       for (const w of aiReport.warnings) tracker.warn('ai_semantic_investigation', w);
       for (const r of aiReport.rejected) {
         tracker.warn('ai_semantic_investigation', `rejected a model finding: ${r.reason}`);
+      }
+    }
+    if (reservationId && req.aiCredits) {
+      const { tokensIn, tokensOut } = client.usage;
+      // Settled even when the stage failed: tokens already spent at the
+      // provider are a real cost, and the hold must not be left dangling.
+      // Nothing was spent -> settling zero returns the whole hold.
+      try {
+        req.aiCredits.settle(reservationId, tokensIn, tokensOut);
+      } catch (e) {
+        tracker.warn(
+          'ai_semantic_investigation',
+          `could not settle the credit reservation: ${e instanceof Error ? e.message : String(e)}`,
+        );
       }
     }
   }

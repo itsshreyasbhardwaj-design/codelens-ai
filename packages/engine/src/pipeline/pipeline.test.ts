@@ -6,7 +6,7 @@ import { join } from 'node:path';
 import { Db, NotFoundError } from '../db/index.ts';
 import { CredentialStorageUnavailable, encryptToken, decryptToken, redactSecrets } from '../db/crypto.ts';
 import { runScan } from './orchestrator.ts';
-import { saveScan, loadScanSide, listScans } from './persist.ts';
+import { beginScan, ensureProject, failScan, saveScan, loadScanSide, listScans } from './persist.ts';
 import { securityAnalyzer } from '../analyzers/security.ts';
 import type { Analyzer } from '../analyzers/types.ts';
 
@@ -109,6 +109,70 @@ describe('scan orchestration', () => {
     assert.equal(stage.status, 'skipped');
     assert.match(stage.message!, /no AI provider configured/);
     assert.equal(outcome.coverage.layers.ai, false);
+  });
+
+  it('skips the AI layer with the billing reason when credits are refused, and still delivers the scan', async (t) => {
+    const dir = tempProject(MINIMAL_APP);
+    t.after(() => rmSync(dir, { recursive: true, force: true }));
+
+    let settled = false;
+    const outcome = await runScan({
+      projectId: 'p1', projectName: 'Tiny',
+      source: { kind: 'local', path: dir },
+      analyzers: [securityAnalyzer],
+      // A configured provider, so the stage is reachable and the refusal under
+      // test is the credit refusal rather than a missing provider.
+      aiConfig: {
+        provider: 'ollama', model: 'qwen2.5-coder', tokenBudget: 10_000,
+        ollamaUrl: 'http://127.0.0.1:1', externalTransferAcknowledged: false,
+      },
+      aiCredits: {
+        estimate: () => 40,
+        reserve: () => ({ ok: false, reason: 'This would use up to 40 credits and 0 are available.' }),
+        settle: () => { settled = true; },
+      },
+    });
+
+    const stage = outcome.stages.find((s) => s.name === 'ai_semantic_investigation')!;
+    assert.equal(stage.status, 'skipped');
+    assert.match(stage.message!, /40 credits and 0 are available/);
+    assert.equal(outcome.coverage.layers.ai, false, 'a refused layer must not be reported as having run');
+    assert.equal(settled, false, 'nothing may be settled when nothing was reserved');
+
+    // The point of metering only the AI layer: the deterministic scan still ran.
+    assert.equal(outcome.stages.find((s) => s.name === 'deterministic_diagnostics')!.status, 'completed');
+    assert.ok(outcome.map, 'the scan must still produce a repository map');
+    assert.notEqual(outcome.status, 'failed');
+  });
+
+  it('settles the hold against metered usage even when the AI layer fails', async (t) => {
+    const dir = tempProject(MINIMAL_APP);
+    t.after(() => rmSync(dir, { recursive: true, force: true }));
+
+    const calls: Array<{ id: string; tokensIn: number; tokensOut: number }> = [];
+    const outcome = await runScan({
+      projectId: 'p1', projectName: 'Tiny',
+      source: { kind: 'local', path: dir },
+      analyzers: [securityAnalyzer],
+      // Port 1 refuses the connection, so the layer fails after reserving.
+      aiConfig: {
+        provider: 'ollama', model: 'qwen2.5-coder', tokenBudget: 10_000,
+        ollamaUrl: 'http://127.0.0.1:1', externalTransferAcknowledged: false,
+      },
+      aiCredits: {
+        estimate: () => 40,
+        reserve: () => ({ ok: true, reservationId: 'res_1', tokenCeiling: 20_000 }),
+        settle: (id, tokensIn, tokensOut) => { calls.push({ id, tokensIn, tokensOut }); },
+      },
+    });
+
+    assert.equal(calls.length, 1, 'a hold must be settled exactly once');
+    assert.equal(calls[0]!.id, 'res_1');
+    // Nothing reached the provider, so nothing is charged and the whole hold
+    // comes back. A dangling hold would silently cost the customer credits.
+    assert.equal(calls[0]!.tokensIn, 0);
+    assert.equal(calls[0]!.tokensOut, 0);
+    assert.notEqual(outcome.status, 'failed', 'a failed AI layer must not fail the scan');
   });
 
   it('survives an analyzer that throws, and records it as skipped', async (t) => {
@@ -384,5 +448,209 @@ describe('credential handling', () => {
     assert.doesNotMatch(out, /hunter2/);
     assert.doesNotMatch(out, /AKIAIOSFODNN7EXAMPLE/);
     assert.match(out, /REDACTED/);
+  });
+});
+
+describe('project identity is scoped to the organisation', () => {
+  function orgs(db: Db): [string, string] {
+    for (const id of ['org_alpha', 'org_beta']) {
+      db.run(
+        'INSERT INTO organizations (id, name, slug, created_at, updated_at) VALUES (?,?,?,?,?)',
+        id, id, id.replace('_', '-'), new Date().toISOString(), new Date().toISOString(),
+      );
+    }
+    return ['org_alpha', 'org_beta'];
+  }
+
+  it('refuses to attach one organisation\'s scan to another\'s project', (t) => {
+    const db = new Db(':memory:');
+    db.migrate();
+    t.after(() => db.close());
+    const [alpha, beta] = orgs(db);
+
+    // Both organisations scan a directory called "api". Before the fix the web
+    // runner derived the project id from the name alone, so both produced the
+    // id "api"; ensureProject looked it up WITHOUT an organisation predicate,
+    // found alpha's row, skipped the insert, and wrote beta's entire scan —
+    // snapshot, findings, fix packs — under alpha's project. Alpha could read
+    // beta's private source analysis; beta could not read its own.
+    ensureProject(db, { organizationId: alpha, projectId: 'api', projectName: 'api', slug: 'api' });
+
+    assert.throws(
+      () => ensureProject(db, { organizationId: beta, projectId: 'api', projectName: 'api', slug: 'api' }),
+      /UNIQUE|constraint/i,
+      'a colliding id must fail loudly rather than attach to the other tenant',
+    );
+
+    const owner = db.get<{ organization_id: string }>(
+      'SELECT organization_id FROM projects WHERE id = ?', 'api',
+    );
+    assert.equal(owner?.organization_id, alpha, "the first organisation's project is untouched");
+  });
+
+  it('keeps same-named projects apart when the id carries the organisation', (t) => {
+    const db = new Db(':memory:');
+    db.migrate();
+    t.after(() => db.close());
+    const [alpha, beta] = orgs(db);
+
+    // The shape the runner now produces: `${organizationId}:${slug}`.
+    ensureProject(db, { organizationId: alpha, projectId: `${alpha}:api`, projectName: 'api', slug: 'api' });
+    ensureProject(db, { organizationId: beta, projectId: `${beta}:api`, projectName: 'api', slug: 'api' });
+
+    const rows = db.all<{ id: string; organization_id: string; slug: string }>(
+      'SELECT id, organization_id, slug FROM projects ORDER BY organization_id',
+    );
+    assert.equal(rows.length, 2, 'two organisations, two projects');
+    assert.deepEqual(rows.map((r) => r.organization_id), [alpha, beta]);
+    // The human-facing slug stays readable and is unique per organisation.
+    assert.deepEqual(rows.map((r) => r.slug), ['api', 'api']);
+  });
+
+  it('registers a scan row before the pipeline runs, and completes it afterwards', async (t) => {
+    const dir = tempProject(MINIMAL_APP);
+    const db = new Db(':memory:');
+    db.migrate();
+    t.after(() => { db.close(); rmSync(dir, { recursive: true, force: true }); });
+    const [alpha] = orgs(db);
+    const opts = { organizationId: alpha, projectId: `${alpha}:tiny`, projectName: 'Tiny', slug: 'tiny' };
+
+    const scanId = 'scan_fixed-key';
+    beginScan(db, scanId, opts);
+    const registered = db.get<{ status: string }>('SELECT status FROM scan_jobs WHERE id = ?', scanId);
+    assert.equal(registered?.status, 'running', 'the row must exist while the scan is in flight');
+
+    const outcome = await runScan({
+      projectId: opts.projectId, projectName: opts.projectName,
+      source: { kind: 'local', path: dir },
+      analyzers: [securityAnalyzer],
+      idempotencyKey: 'fixed-key',
+    });
+    assert.equal(outcome.scanId, scanId, 'the runner must be able to predict the scan id');
+
+    // The upsert matters: a plain insert here hits UNIQUE (project_id,
+    // idempotency_key) and rolls back the entire save, losing the scan.
+    saveScan(db, outcome, opts);
+
+    const rows = db.all('SELECT id, status FROM scan_jobs WHERE id = ?', scanId);
+    assert.equal(rows.length, 1, 'one row, updated in place');
+    assert.notEqual((rows[0] as { status: string }).status, 'running', 'the final status must be recorded');
+  });
+});
+
+describe('a scan that produces nothing is still closed out', () => {
+  function orgProject(db: Db) {
+    db.run(
+      'INSERT INTO organizations (id, name, slug, created_at, updated_at) VALUES (?,?,?,?,?)',
+      'org_x', 'org_x', 'org-x', new Date().toISOString(), new Date().toISOString(),
+    );
+    return { organizationId: 'org_x', projectId: 'org_x:p', projectName: 'p', slug: 'p' };
+  }
+
+  it('does not leave a failed scan running forever', (t) => {
+    const db = new Db(':memory:');
+    db.migrate();
+    t.after(() => db.close());
+    const opts = orgProject(db);
+
+    // beginScan registers the row so the credit ledger has a referent. A scan
+    // that fails ingestion never reaches saveScan, so without failScan the row
+    // stays `running` with no reason, permanently.
+    beginScan(db, 'scan_failed', opts);
+    failScan(db, 'scan_failed', 'failed', 'no such directory');
+
+    const row = db.get<{ status: string; error_message: string; finished_at: string }>(
+      'SELECT status, error_message, finished_at FROM scan_jobs WHERE id = ?', 'scan_failed',
+    );
+    assert.equal(row?.status, 'failed');
+    assert.equal(row?.error_message, 'no such directory', 'the reason must be persisted, not just in memory');
+    assert.ok(row?.finished_at, 'finished_at must be set');
+  });
+
+  it('never clobbers a scan that already completed', (t) => {
+    const db = new Db(':memory:');
+    db.migrate();
+    t.after(() => db.close());
+    const opts = orgProject(db);
+
+    beginScan(db, 'scan_ok', opts);
+    db.run("UPDATE scan_jobs SET status = 'completed', finished_at = ? WHERE id = ?",
+      new Date().toISOString(), 'scan_ok');
+
+    // The runner's catch-all calls this; it must be a no-op here.
+    failScan(db, 'scan_ok', 'failed', 'a late error');
+
+    const row = db.get<{ status: string; error_message: string | null }>(
+      'SELECT status, error_message FROM scan_jobs WHERE id = ?', 'scan_ok',
+    );
+    assert.equal(row?.status, 'completed');
+    assert.equal(row?.error_message, null);
+  });
+
+  it('keeps a dead scan out of the project\'s latest-scan slot', (t) => {
+    const db = new Db(':memory:');
+    db.migrate();
+    t.after(() => db.close());
+    const opts = orgProject(db);
+
+    // The dashboard picks the latest scan by queued_at with no status
+    // predicate, so an unfinalised row became the project's latest scan.
+    beginScan(db, 'scan_dead', opts);
+    failScan(db, 'scan_dead', 'failed', 'ingestion failed');
+
+    const latest = db.get<{ id: string; status: string }>(
+      `SELECT id, status FROM scan_jobs WHERE project_id = ? ORDER BY queued_at DESC LIMIT 1`,
+      opts.projectId,
+    );
+    assert.equal(latest?.id, 'scan_dead');
+    assert.notEqual(latest?.status, 'running', 'the card must never show a scan that is not running');
+  });
+});
+
+describe('the plan ceiling is applied to analysed source', () => {
+  it('refuses a repository larger than the plan allows', async (t) => {
+    const dir = tempProject(MINIMAL_APP);
+    t.after(() => rmSync(dir, { recursive: true, force: true }));
+
+    const outcome = await runScan({
+      projectId: 'p', projectName: 'Tiny',
+      source: { kind: 'local', path: dir },
+      analyzers: [securityAnalyzer],
+      maxSourceBytes: 10,  // smaller than any real project
+    });
+
+    assert.equal(outcome.status, 'failed');
+    assert.match(outcome.errorMessage!, /analysable source/);
+    assert.match(outcome.errorMessage!, /plan/);
+    // Ingestion and normalisation did their work and say so; the rest is skipped
+    // with the reason, not reported as having run.
+    assert.equal(outcome.stages.find((x) => x.name === 'source_normalization')!.status, 'completed');
+    assert.equal(outcome.stages.find((x) => x.name === 'deterministic_diagnostics')!.status, 'skipped');
+  });
+
+  it('allows a repository inside the plan, counting only what is analysed', async (t) => {
+    const dir = tempProject(MINIMAL_APP);
+    t.after(() => rmSync(dir, { recursive: true, force: true }));
+
+    const outcome = await runScan({
+      projectId: 'p', projectName: 'Tiny',
+      source: { kind: 'local', path: dir },
+      analyzers: [securityAnalyzer],
+      maxSourceBytes: 50_000_000,
+    });
+    assert.notEqual(outcome.status, 'failed');
+    assert.ok(outcome.map);
+  });
+
+  it('treats an absent ceiling as unbounded', async (t) => {
+    const dir = tempProject(MINIMAL_APP);
+    t.after(() => rmSync(dir, { recursive: true, force: true }));
+    // The CLI passes none; it is single-user and has no plan.
+    const outcome = await runScan({
+      projectId: 'p', projectName: 'Tiny',
+      source: { kind: 'local', path: dir },
+      analyzers: [securityAnalyzer],
+    });
+    assert.notEqual(outcome.status, 'failed');
   });
 });

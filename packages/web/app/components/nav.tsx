@@ -3,6 +3,12 @@ import { ThemeToggle } from './theme-toggle.tsx';
 
 export interface NavTab { href: string; label: string }
 
+const MAIN_LINKS: NavTab[] = [
+  { href: '/dashboard', label: 'Dashboard' },
+  { href: '/billing', label: 'Billing' },
+  { href: '/pricing', label: 'Pricing' },
+];
+
 export function TopBar({ tabs, current, context }: { tabs?: NavTab[]; current?: string; context?: string }) {
   return (
     <header
@@ -62,9 +68,15 @@ export function TopBar({ tabs, current, context }: { tabs?: NavTab[]; current?: 
           </nav>
         ) : (
           <nav aria-label="Main" style={{ display: 'flex', gap: '0.15rem' }}>
-            <Link href="/dashboard" style={{ padding: '0.3rem 0.6rem', borderRadius: 6, fontSize: '0.86rem', textDecoration: 'none', color: 'var(--ink-3)' }}>
-              Dashboard
-            </Link>
+            {MAIN_LINKS.map((l) => (
+              <Link
+                key={l.href}
+                href={l.href}
+                style={{ padding: '0.3rem 0.6rem', borderRadius: 6, fontSize: '0.86rem', textDecoration: 'none', color: 'var(--ink-3)' }}
+              >
+                {l.label}
+              </Link>
+            ))}
           </nav>
         )}
 
@@ -90,7 +102,26 @@ export function Shell({ children }: { children: React.ReactNode }) {
   return (
     <main
       id="main"
-      style={{ maxWidth: '78rem', margin: '0 auto', padding: '1.5rem 1rem 4rem', display: 'grid', gap: '1.25rem' }}
+      style={{
+        maxWidth: '78rem', margin: '0 auto', padding: '1.5rem 1rem 4rem',
+        display: 'grid', gap: '1.25rem',
+        // `minmax(0, 1fr)` rather than the implicit `1fr`.
+        //
+        // A grid item's default `min-width: auto` refuses to shrink below its
+        // content's minimum width. `Table` already wraps itself in
+        // `overflow-x: auto` so a wide table scrolls inside its card — but that
+        // wrapper can never engage while the card above it is a grid item that
+        // will not narrow. The card widens instead and takes the page with it.
+        //
+        // Measured on /billing at 375px, where the credit ledger is the widest
+        // table in the application: `document.body.scrollWidth` was 558px
+        // without this declaration and 375px with it. Use `body.scrollWidth`,
+        // or whether the page actually scrolls, to check this —
+        // `documentElement.scrollWidth` reports the unclipped width of content
+        // inside a scroll container and reads as overflow on pages that are
+        // perfectly fine.
+        gridTemplateColumns: 'minmax(0, 1fr)',
+      }}
     >
       {children}
     </main>

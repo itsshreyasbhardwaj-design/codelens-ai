@@ -278,7 +278,7 @@ export default async function DashboardPage() {
   // Redirects to /sign-in when there is no valid session.
   const { organizationId } = await requireSession();
   const projects = listProjects(organizationId);
-  const jobs = listJobs();
+  const jobs = listJobs(organizationId);
   const inFlight = jobs.filter((j) => !j.finishedAt);
 
   return (

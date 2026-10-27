@@ -115,7 +115,33 @@ progress, project overview with scorecard and coverage panel, architecture
 explorer, findings explorer with full evidence inspection, Fix Studio, a
 repository-aware question surface, and report exports.
 
-**143 automated tests**, zero runtime test dependencies: Node's built-in test
+**Plans, limits and the credit ledger.** Five plans seeded into the database
+(free, solo, pro, team, enterprise) with per-plan project, scan, seat and
+monthly-credit limits. Entitlements are enforced where the work starts, not in
+the UI: `/api/scans` returns 402 with a machine-readable remedy when a project
+or scan limit is hit. Credits use reserve → settle → release with an
+`InsufficientCredits` check *before* anything is written, a `CHECK (balance >= 0)`
+constraint behind that, and a unique idempotency key on every ledger row so a
+retried request cannot double-charge. Settlement is clamped to the reserved
+ceiling: an under-estimate is a bug in estimation, not a licence to charge more.
+
+**What is never metered.** Deterministic analysis — the layer the recall numbers
+above come from — costs nothing to run and is never gated on credits. An
+organisation at zero credits still gets a complete scan; only the optional AI
+layer draws on the balance, and a refusal skips that one stage with the reason
+attached rather than failing the scan. Both behaviours are covered by tests in
+`packages/engine/src/pipeline/pipeline.test.ts`.
+
+**Payments.** A `PaymentProvider` interface with a Stripe adapter and a
+`NoPaymentProvider` default. Signature verification is a pure exported function
+tested offline against a known-good HMAC, a replayed timestamp outside the 300s
+tolerance, a tampered body, and multiple `v1` signatures during secret rotation.
+Webhook application is idempotent on `(provider, provider_event_id)`. With no
+provider configured the app says so and leaves every account on the free plan;
+with Stripe selected but no webhook secret it **refuses to run billing at all**,
+because entitlements would otherwise rest on an unverified request.
+
+**262 automated tests**, zero runtime test dependencies: Node's built-in test
 runner and native TypeScript.
 
 ## Not implemented
@@ -153,13 +179,22 @@ Stated plainly rather than stubbed.
 - **Deep analysis beyond TypeScript, JavaScript and Python.** Other languages
   get structural and text-level analysis. Depth per language is published in
   `docs/SUPPORTED.md` and reported per scan.
+- **Billing beyond checkout and webhooks.** No dunning, no invoices, no
+  proration, no tax handling, no customer-portal integration, and no email of
+  any kind — there is a `notifications` table and nothing that sends. Stripe's
+  own hosted pages cover most of this; none of it is wired into this UI. Only
+  the Stripe adapter exists, though the provider interface was written for a
+  second one.
+- **Single-session revocation.** Sessions are stateless signed cookies, so
+  revoking one session means rotating `CODELENS_SECRET_KEY`, which invalidates
+  all of them. Noted in `packages/engine/src/db/auth.ts`.
 - **Horizontal scaling of the web app.** In-flight job state lives in a
   module-level map, correct for one process. The orchestrator already persists
   stages, so a multi-process deployment would read those tables instead.
 
 ## How this was verified, and what was not
 
-Verified by execution: the type checker and the 124-test suite (unit,
+Verified by execution: the type checker and the 262-test suite (unit,
 integration, and a single end-to-end journey test that ingests the fixture,
 diagnoses it, generates and validates Fix Packs, exports every report format,
 applies fixes, re-scans and compares); the accuracy harness; a production build
@@ -194,6 +229,335 @@ The third stands and is not fixed: the authentication routes have no automated
 test. The logic beneath them has 19, and the routes were verified by hand
 against a running server, but there is no test that would catch a regression in
 the route glue itself. It is reported here rather than argued away.
+
+## Third self-audit (after the billing work)
+
+CodeLens was run against its own repository again once plans, credits,
+entitlements and payments were in place. It reported **four things in our own
+code**; all four were acted on, and the split is the useful part.
+
+**One real defect, in the application.** `GET` and `DELETE /api/scans/:jobId`
+authenticated the caller through the middleware and then looked the job up by id
+without checking who owned it. Any signed-in user with another tenant's job id
+could read that scan's project name and progress, and **cancel the scan**.
+Classic broken object-level authorisation — the exact class the tool detects —
+found by the tool, in the tool. Jobs now carry their organisation, a job
+belonging to someone else is reported as absent exactly as a missing one is, and
+the fix was verified live with two accounts: before, a second tenant got 200 on
+the read and 202 on the cancel; after, both are 404.
+
+**Three false positives, each a rule defect worth fixing rather than
+suppressing.**
+
+- `reliability.http.no_timeout` fired on all three outbound calls (Anthropic,
+  OpenAI, Stripe) although every one of them passes
+  `signal: AbortSignal.timeout(...)`. The rule tested the parser's captured
+  argument text, which is truncated at 200 characters, so a `signal` placed
+  after a large `body` was invisible. It now reads the call's own source back
+  from the file, paren-balanced and comment-stripped. *Worth recording that the
+  first attempt at this was wrong: the finding was taken at face value and
+  timeouts were "added" that were already there. Re-reading the code is what
+  found the real defect.*
+- `security.authz.missing_authentication` fired at high severity on four routes
+  that do authenticate, because the auth-helper list held framework names only
+  and this project's helper is called `sessionOr401`. A fixed list can never
+  cover what a project calls its own helper. Project-local helpers are now
+  recognised by shape — a verb meaning "obtain or demand" beside a noun meaning
+  "caller identity" — narrow enough that `createSession` and `sessionStorage`
+  still do not count.
+- `quality.duplication.divergent_logic` fired at high severity on two
+  three-line query wrappers, claiming they had drifted and now computed
+  different answers. They differ only in their SQL string, which is the entire
+  point of each. A differing *number* or *operator* supports the drift claim;
+  a differing opaque *string* does not, and every thin wrapper around a query,
+  route, config key or storage path has that shape. Strings no longer promote a
+  pair to `drift`; such a pair is still reported as the tidiness finding it is.
+
+All three rule changes were made without losing a single ground-truth detection:
+recall stayed at 69/69 and the suite at 204 passing. Our own code now has
+**zero P0 findings**.
+
+## What an external review caught that we did not
+
+An automated review on PR #1 reported five defects. All five were independently
+reproduced before anything was changed, and all five were real. They are
+recorded here because the pattern matters more than the individual bugs: every
+one of them sat in code that the test suite passed, that typechecked, and that
+had been exercised by hand.
+
+- **Cross-tenant data exposure (the worst of them).** The web runner derived a
+  project's id from its name alone, and `ensureProject` looked that id up
+  without an organisation predicate. Two organisations scanning a directory
+  with the same name shared one project row: the second organisation's
+  snapshot, findings and fix packs were written under the first organisation's
+  project — readable by them, and not by its owner, whose dashboard simply came
+  back empty. One free signup and a guessable project name was the whole attack.
+  Project ids are now tenant-scoped and `ensureProject` is organisation-scoped,
+  so a colliding id fails loudly instead of attaching silently.
+- **The AI layer never ran, for anyone.** `credit_ledger.scan_id` is a foreign
+  key to `scan_jobs`, and the scan row was only written *after* the pipeline
+  finished — so every credit reservation failed with `FOREIGN KEY constraint
+  failed`, which the orchestrator reported as a credit refusal. A customer with
+  a full balance saw a database error in the billing-refusal slot and no AI
+  analysis, on every scan, 100% of the time. The scan row is now registered
+  before the pipeline starts and completed by an upsert afterwards.
+- **Every subscription event granted a full month's credits.** The grant was
+  keyed on the provider event id, and Stripe sends
+  `customer.subscription.updated` for renewals, card changes, cancellation
+  toggles and `past_due` recoveries. A separate monthly key could never collide
+  with it, so the scan path added one more on top. Both paths now share one key
+  of (organisation, plan, month) — which also fixes a silent under-grant for
+  anyone upgrading mid-month, and stops an Enterprise subscription throwing on
+  its zero allowance.
+- **A plan change would have billed the customer twice.** Stripe Checkout is
+  always `mode=subscription`: it can only create a subscription, never replace
+  one, and nothing in this codebase cancels or modifies a subscription at the
+  provider. An ordinary Solo → Pro upgrade would have left both billing while
+  the UI showed Pro. Changing plan is now refused with an explanation until the
+  Subscriptions API is wired in; credit top-ups are unaffected.
+- **Re-scanning your own project was refused as a new one.** The entitlement
+  check slugified the *optional* `name` field, so an unnamed scan looked up the
+  literal slug `project` while persistence used the directory, repository or
+  archive name; the stored slug was also truncated to 24 characters where the id
+  was not. A Free account was told to upgrade to do something its plan allowed.
+  Both now resolve the same identity through one function.
+
+Each has a regression test that fails if its fix is reverted — verified by
+reverting them. The honest lesson is that the suite passing said nothing about
+any of this: the pipeline tests stubbed the credit hooks, and no test had ever
+created two organisations and had them scan the same directory.
+
+## A second review round, including two regressions from the first
+
+The fixes above were themselves reviewed, and four more defects came out. Two
+were introduced by the previous round's fix — which is the honest cost of
+`beginScan`: registering a scan row before the pipeline runs created a lifecycle
+with only one exit, and the failure paths fell out of it.
+
+- **An unpaid subscription granted a paid plan.** `plan_code` was written for
+  any subscription event, and `planForOrganization` falls back to that column,
+  so an `incomplete` subscription — a card challenge the customer abandoned —
+  yielded Pro limits and 1,200 credits before any payment cleared. Worse, the
+  status whitelist sent anything it did not recognise to `active`, and Stripe
+  has three it did not list (`incomplete_expired`, `unpaid`, `paused`), each
+  stored as a genuinely active subscription row. Chained together that is a
+  permanent free Pro account for anyone who starts a checkout and walks away.
+  The mapping is now total and fails closed, and only an entitling status may
+  move `plan_code`.
+- **The AI stage could outspend what was reserved.** `estimateScanCredits`
+  derived its ceiling from file count while `selectTargets` derives the work
+  from routes and features: a ten-file service with eight unvalidated handlers
+  was estimated at two investigations and ran eight. Because `settle` clamps the
+  charge to the reservation, the excess was absorbed silently rather than
+  billed — measured at 4.2x on one fixture. The estimate now takes the real
+  target count and the model's token budget is capped to what the reservation
+  funds, so the ceiling, the budget and the work are one number.
+- **An interrupted scan held its credits forever** *(regression)*.
+  `releaseStaleReservations` excludes scans marked `running`, and `beginScan`
+  writes exactly that — so a process that died between reserving and settling
+  left a hold nothing could see. There was also no production caller of the
+  recovery function at all, only tests. `recoverOrphanedScans` now runs at boot,
+  which is sound precisely because this deployment is single-writer by rule: at
+  startup, `running` means orphaned.
+- **A failed or cancelled scan was never closed out** *(regression)*. `saveScan`
+  is skipped for those outcomes, so the row `beginScan` created stayed `running`
+  with no reason — and every "latest scan" query orders by `queued_at` with no
+  status filter, so it became the project's latest scan until something else
+  succeeded. The failure reason lived only in memory and was lost on restart.
+  `failScan` now closes the row on both exits.
+
+Twelve more regression tests, each confirmed to fail when its fix is reverted,
+and the boot recovery verified against a real restart: 60 held credits returned,
+the scan marked failed, and a ledger line saying why.
+
+Two lessons worth keeping. A fix that introduces a new state must be reviewed
+for every path out of that state, not just the one it was written for. And the
+reviewer that found the first round's bugs found the bugs in the fixes too —
+which is an argument for re-reviewing fixes, not only original code.
+
+## A third review round: webhooks are not an ordered, reliable channel
+
+Three more defects, and together they name a category the first two rounds
+missed. The webhook handler was written as though each event were a reliable,
+ordered instruction — grant on `completed`, cancel on `deleted` — when the
+provider guarantees neither.
+
+- **Credits were granted before the money arrived.** A delayed-notification
+  payment method (ACH, SEPA, Bacs, Boleto, OXXO, Konbini, bank transfer)
+  completes the Checkout Session *before* funds settle, with
+  `payment_status: 'unpaid'`. The handler never read that field, so it recorded
+  the purchase as paid and granted spendable credits; `async_payment_failed`
+  fell through to "ignored event type", so nothing could ever take them back.
+  Only an explicit `unpaid` now waits — an unconditional defer would have
+  starved the ordinary card payment, which is already `paid` at `completed` and
+  is never followed by an async event. Fulfilment is keyed on the session, not
+  the event, so `completed` and `async_payment_succeeded` grant once between
+  them.
+- **A cancelled subscription could be resurrected.** An update generated before
+  a cancellation but delivered after it is a genuinely different event, so the
+  replay guard on `payment_events` cannot see it, and the upsert wrote its
+  status unconditionally — restoring the paid plan and its allowance for good.
+  Migration 003 records `ended_at`, and an update to an ended subscription is
+  refused.
+  **The obvious version of this fix locks out paying customers**, and it was
+  caught only because the fix was tested against the neighbouring cases: the
+  previous round flattened `paused` and `unpaid` onto `canceled`, and Stripe
+  recovers both on the *same* subscription id. Treating a stored `canceled` as
+  terminal would therefore strand them. `ended_at` is set from the raw provider
+  status, never the stored one, and the migration backfills only where the event
+  log proves a delete.
+- **The plan's repository-size limit was never enforced.** `canStartScan` skips
+  the check when `repoSizeMb` is undefined, which it was for every local and
+  GitHub scan on every plan; ZIPs were measured by compressed upload, so a 13 MB
+  archive could carry 2 GB of source. It is now enforced after normalisation
+  against *analysed* bytes — the quantity the pricing page actually promises.
+  Enforcing it earlier, against the pre-exclusion byte count, would have refused
+  repositories that are genuinely inside their limit: a 60 MB archive that is
+  mostly `node_modules` normalises to 2 MB.
+
+Twelve more regression tests, each verified to fail when its fix is reverted,
+and migration 003 applied to a populated database with its backfill checked.
+
+The through-line across all three rounds: every fix that looked obvious was
+wrong in a way only a test of the *adjacent* case revealed. Two of the nine
+earlier fixes introduced regressions, and two of this round's three would have
+if shipped in their first form.
+
+## A fourth round, and the first finding that was overstated
+
+One finding, down from five, four and three — and the first the verification
+pass downgraded rather than confirmed.
+
+**What was real:** an invoice carries none of our metadata. `createCheckout`
+attaches `organization_id` to the *subscription* and to the checkout *session*,
+and Stripe copies neither onto the invoice, so `invoice.payment_failed` resolved
+no organisation and did nothing. Because `applyWebhookEvent` stamps the event
+processed either way and the route answers 200, a redelivery could not repair
+it. The branch now resolves through the subscription metadata snapshot, falling
+back to the stored subscription row.
+
+**What was overstated:** the finding said the subscription is never marked
+`past_due`. In production it is — Stripe fires `customer.subscription.updated`
+when dunning begins, and that event *does* carry the metadata. The one effect
+genuinely lost was a `notifications` row, and nothing in this codebase reads
+that table; it is already documented as a deliberate gap. So the real severity
+today is far below the P2 it was filed as, and it becomes a genuine P2 only
+when something reads notifications.
+
+Fixed anyway: the code was wrong, the fix is small, and the cost of leaving a
+latent defect in a billing path until the day something depends on it is worse
+than the cost of fixing it now.
+
+**The fix would have shipped a new bug in its first form**, for the fifth time
+in four rounds. Stripe retries a failed payment about four times over two weeks,
+each a separate event, and the branch inserted unconditionally — so repairing
+the resolution would have turned one failed renewal into four identical
+notifications. Notifications are now keyed per invoice. A second guard refuses
+an invoice naming an organisation this installation has never seen, which would
+otherwise hit the notifications foreign key, roll back the whole event including
+its `payment_events` row, and have the route answer 500 for Stripe to retry for
+days.
+
+## A sixth round: the residue of earlier fixes
+
+Two findings, both in code an earlier round introduced.
+
+- **A failed first scan consumed a Free account's only project slot, for good.**
+  `beginScan` creates the project before ingestion has done anything, and
+  `projectCount` counted the row. Nothing in this release sets `deleted_at`, so
+  the slot was never reclaimed and the user could not scan anything else — ever.
+  The reachable triggers are worse than a typo'd repository name: a *correct*
+  public repository over the Free plan's 50 MB ceiling does it, with no user
+  error at all, through the size check added one round earlier. A slot is now
+  held by a project that has been analysed or is being analysed, not by the
+  existence of a row. The failed project stays on the dashboard with its
+  reason; it just costs nothing.
+  This is a deliberate contract change — "one analysed project holds a slot"
+  rather than "one project row holds a slot" — and it changed an existing
+  passing test, which is recorded rather than quietly edited.
+- **Two checkout sessions could both be paid.** The guard added in round one
+  refuses a second subscription checkout once one exists, but two sessions
+  opened before *any* subscription existed both pass, and a Checkout Session
+  stays payable at the provider for about 24 hours. So no guard on session
+  *creation* can close this window: the second payment can land long after the
+  guard started refusing. One tab a minute apart is enough, because the
+  provider idempotency key carries the minute.
+  The fix does not try to serialise checkout. It detects the duplicate where it
+  becomes a fact — in the webhook, as one subscription supersedes another — and
+  says so in the log and in a notification, because superseding marks the old
+  subscription cancelled *locally only* and it is still charging the customer.
+  Three consequences the finding did not mention were measured and are covered
+  by the alert: entitlement flapping between the two plans on every subscription
+  event, a failed invoice on the duplicate marking the *good* subscription
+  `past_due` and locking checkout with a 402, and cancelling the duplicate
+  setting `plan_code` to free while the real subscription is still active.
+
+The verification pass again downgraded a severity (the checkout race needs two
+deliberate card payments, so P2 rather than P1) and again corrected an
+attribution (`beginScan` landed in `3b0a8e5`, not `aa4f97b`).
+
+## A seventh round: when a fix changes a premise another file relies on
+
+Two findings, and together they name the failure mode behind most of this list.
+Neither was wrong code in isolation. Both were correct edits that quietly
+changed a fact some other code was depending on, where both halves still read
+correctly on their own.
+
+- **The project-limit exemption disagreed with the slot rule.** The previous
+  round made a never-analysed project cost no slot, but the scans route has a
+  *separate* query that exempts any existing project row from the limit, and it
+  was not updated. So a row that held no slot still bought a full exemption from
+  the limit it was not counted against. The overshoot is not capped at two:
+  failed scans are cheap, so rows can be banked in one month and cashed in later,
+  one exemption each, to any number of analysed projects on a one-project plan.
+  The two questions now share one SQL predicate in `entitlements.ts`, so they
+  cannot drift apart again — which is the actual fix, the behaviour change
+  being a consequence of it.
+- **The ZIP pre-check refused uploads that were inside the plan limit.** It
+  passed the *compressed* upload size as the plan size, justified by a comment
+  of mine arguing that compressed bytes cannot exceed the source. That is true
+  of raw uncompressed bytes and false of the quantity the limit is actually
+  enforced against — analysed bytes, after normalisation drops `node_modules`,
+  build output and vendored files. A valid 54 MB archive that is all
+  `node_modules` normalises to a few dozen bytes and was refused as "about
+  54 MB", while the same content as a local directory was accepted. The
+  pre-check is gone; `MAX_ARCHIVE_BYTES` still bounds the upload, and the plan
+  ceiling is enforced where the real figure exists.
+
+Worth recording precisely, because it is the sharpest lesson here: that comment
+was not stale. It was written in the *same commit* that introduced the correct
+post-normalisation check — a confident justification for a premise the other
+half of the same change had just invalidated.
+
+Known and accepted: an over-limit ZIP now costs one of the month's scans,
+because the refusal moved past `beginScan`. That was already true for local and
+GitHub inputs, so this makes all three consistent rather than leaving a false
+refusal on one. Metering refused scans is a separate decision and is not made
+here.
+
+## An eighth round: a gap I had seen and talked myself out of
+
+One finding, and the honest part is that it was not news. When the registration
+grant was added, the note in that commit said the scan path "grants again on
+rollover" and called the remaining gap good enough. It is not: opening the
+billing page is none of the three grant paths (registration, starting a scan,
+the subscription webhook), so an account that spent October's credits and
+opened Billing on the 1st of November saw a zero balance and "the AI layer is
+unavailable until this is topped up" beside the purchase buttons — while
+submitting a scan would have granted the credits immediately. That prompts
+someone to buy what they already have.
+
+The allowance is now taken before the page reads anything. It sits *inside* the
+existing try, not above it, because it resolves the plan too: on an unseeded
+catalogue it raises the same error, and that must still render the explanation
+rather than fail the page. Verified live — the balance went 0 to 40 on opening
+the page, and stayed 40 across three refreshes.
+
+The lesson is narrower than the earlier rounds and worth keeping anyway: the
+defect was not an oversight but a judgement, written down at the time, that a
+known gap did not matter. The reasoning was recorded honestly and was still
+wrong, which is a good argument for treating "good enough, and here is why" as
+something to revisit rather than something settled.
 
 ## Self-audit false positives, found and fixed
 

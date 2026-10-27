@@ -2,6 +2,8 @@ import 'server-only';
 import { existsSync, mkdirSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { Db } from '@codelens/engine/db/index.ts';
+import { seedPlans } from '@codelens/engine/billing/plans.ts';
+import { recoverOrphanedScans } from '@codelens/engine/billing/credits.ts';
 
 /**
  * Server-side data access for the web application.
@@ -58,6 +60,24 @@ export function db(): Db {
   mkdirSync(dirname(DB_PATH), { recursive: true });
   const d = new Db(DB_PATH);
   d.migrate();
+  // The plan catalogue is reference data, not user data: without it
+  // `planForOrganization` has no free plan to fall back to and every
+  // entitlement check fails. Seeded here rather than inside `migrate()` to keep
+  // the engine's billing module out of the database module's imports, and
+  // `seedPlans` never overwrites a price an operator has edited.
+  seedPlans(d);
+  // One process by rule (docs/DEPLOYMENT.md), so any scan still marked
+  // `running` when we open the database belongs to a process that is gone. Its
+  // credit hold is invisible to `releaseStaleReservations`, whose predicate
+  // excludes `running`, and would otherwise be held forever — the customer
+  // short the credits with nothing in the ledger to explain it.
+  const recovered = recoverOrphanedScans(d);
+  if (recovered.scans > 0) {
+    console.warn(
+      `[codelens] recovered ${recovered.scans} scan(s) interrupted by a restart, `
+      + `returning ${recovered.reservations} credit reservation(s)`,
+    );
+  }
   cached = d;
   return d;
 }

@@ -2,6 +2,8 @@ node_modules/
 .next/
 dist/
 .codelens/
+# Report output from scanning this repository with itself.
+codelens-report/
 *.log
 .DS_Store
 .env
