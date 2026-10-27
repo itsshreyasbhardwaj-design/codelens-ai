@@ -1,5 +1,8 @@
 import { loadAiConfig, ModelClient } from '@codelens/engine/ai/provider.ts';
 import { loadPaymentProvider } from '@codelens/engine/billing/payments.ts';
+// The key floor is the engine's, imported rather than restated: a second copy
+// of a security threshold is a divergence waiting to happen.
+import { MIN_SECRET_KEY_CHARS } from '@codelens/engine/db/auth.ts';
 import { databasePath, db } from '../../lib/store.ts';
 
 /**
@@ -27,9 +30,6 @@ import { databasePath, db } from '../../lib/store.ts';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
-
-/** Matches the floor enforced in engine/db/auth.ts, which refuses a shorter key. */
-const MIN_SECRET_KEY_CHARS = 32;
 
 interface Health {
   status: 'ok' | 'degraded' | 'unavailable';

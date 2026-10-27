@@ -4,6 +4,7 @@ import { readZip } from './zip.ts';
 import { writeZip } from './zipwriter.ts';
 import { safeArchivePath } from './paths.ts';
 import { DEFAULT_LIMITS, IngestRejected } from './limits.ts';
+import { isExcludedDir, isExcludedPath } from './ignore.ts';
 
 const L = DEFAULT_LIMITS;
 
@@ -124,5 +125,24 @@ describe('zip reader', () => {
   it('refuses an archive declaring more entries than the limit', () => {
     const zip = writeZip([{ name: 'a.txt', content: 'x' }, { name: 'b.txt', content: 'y' }]);
     expectRejected(() => readZip(zip, { ...L, maxEntries: 1 }), 'too_many_entries');
+  });
+});
+
+describe('our own output is not project source', () => {
+  it('excludes the directories CodeLens writes into', () => {
+    // Scanning a project that uses CodeLens was ingesting CodeLens's own
+    // database. The sidecars sniff as binary so nothing was mis-analysed, but
+    // their bytes counted toward the snapshot and toward the plan's megabyte
+    // ceiling, and grew with every scan.
+    assert.equal(isExcludedDir('.codelens'), true);
+    assert.equal(isExcludedDir('codelens-report'), true);
+    assert.equal(isExcludedPath('.codelens/codelens.db').excluded, true);
+    assert.equal(isExcludedPath('.codelens/codelens.db-wal').excluded, true);
+    assert.equal(isExcludedPath('codelens-report/findings.json').excluded, true);
+  });
+
+  it('still analyses a source file whose name merely resembles them', () => {
+    assert.equal(isExcludedDir('codelens'), false);
+    assert.equal(isExcludedPath('src/codelens-report.ts').excluded, false);
   });
 });

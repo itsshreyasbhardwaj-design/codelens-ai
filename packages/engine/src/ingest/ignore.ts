@@ -13,6 +13,12 @@ const EXCLUDED_DIRS = new Set([
   'venv', '.venv', 'env', 'vendor', 'target', 'bin', 'obj', '.gradle',
   '.idea', '.vscode', '.terraform', '.serverless', 'Pods', '.dart_tool',
   'bower_components', 'jspm_packages', '.yarn', '.pnpm-store', '.output',
+  // Our own working directories. Scanning a project that uses CodeLens was
+  // ingesting CodeLens's database as project content: the sidecars sniff as
+  // binary and are never parsed, so nothing was mis-analysed, but their bytes
+  // counted toward the snapshot and toward the plan's megabyte ceiling, and
+  // grew with every scan. Both are already in this repository's .gitignore.
+  '.codelens', 'codelens-report',
 ]);
 
 /** Binary and asset extensions: indexed as assets, never parsed. */

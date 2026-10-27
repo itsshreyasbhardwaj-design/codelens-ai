@@ -38,6 +38,20 @@ export class Db {
     this.raw = new DatabaseSync(path);
     this.raw.exec('PRAGMA foreign_keys = ON');
     this.raw.exec('PRAGMA journal_mode = WAL');
+    // SQLite's default is 0: a writer that finds the lock held fails instantly
+    // rather than waiting — measured at 0.03 ms, with errcode 5. That is
+    // reachable in the flow the README and the landing page both recommend,
+    // `pnpm scan` from the repository root while the dev server holds the same
+    // file, and it cost a completed scan: saveScan's transaction (persist.ts)
+    // is a ~26 ms window for a 24-file project and grows with the repository.
+    // Waiting fixes the cross-process case — measured 787 ms, then success.
+    //
+    // It is NOT a fix for two connections inside one process. node:sqlite is
+    // synchronous, so a blocked call owns the only thread and the holder can
+    // never reach its COMMIT: the wait expires and fails anyway, five seconds
+    // later than before. One connection per process is the rule — store.ts
+    // caches a single Db — and this pragma is not permission to open a second.
+    this.raw.exec('PRAGMA busy_timeout = 5000');
   }
 
   /**

@@ -142,12 +142,28 @@ async function cmdScan(args: Args): Promise<number> {
   printSummary(outcome, projectName, Date.now() - started);
 
   // --- persist ---
+  // Held, not thrown. The reports below are pure functions of `outcome` and
+  // need no database, so a storage failure must not take them down with it:
+  // a write lock held by another process once discarded a completed scan AND
+  // every report file, after minutes of analysis, behind five words of error.
+  // Rethrown after the reports are on disk, so the exit code still says the
+  // scan was not stored.
+  let persistError: unknown;
   if (args.flags['no-save'] !== true) {
     const dbPath = defaultDbPath(str(args.flags, 'db'));
     const db = openDb(dbPath);
     try {
       saveScan(db, outcome, { organizationId: 'local', projectId, projectName });
       if (!quiet) console.log(`\nStored scan ${outcome.scanId} in ${dbPath}`);
+    } catch (e) {
+      persistError = e;
+      console.error(`\nwarning: the scan finished but could not be stored in ${dbPath}: `
+        + `${e instanceof Error ? e.message : String(e)}`);
+      if (e instanceof Error && /database is locked/i.test(e.message)) {
+        console.error('Another process is writing to that database — a running web server, '
+          + 'or a second scan. Only one writer at a time; re-run this scan when it is idle.');
+      }
+      console.error('Writing the reports anyway.');
     } finally {
       db.close();
     }
@@ -204,6 +220,7 @@ async function cmdScan(args: Args): Promise<number> {
     console.log('\nOpen a .html report in a browser and use "Save as PDF" to produce a PDF.');
   }
 
+  if (persistError) throw persistError;
   return outcome.status === 'failed' ? 1 : 0;
 }
 

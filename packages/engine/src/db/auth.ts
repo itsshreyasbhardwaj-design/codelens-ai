@@ -29,11 +29,17 @@ const MAX_MEM = 64 * 1024 * 1024;
 export const SESSION_COOKIE = 'codelens_session';
 const SESSION_TTL_SECONDS = 60 * 60 * 12;
 
+/**
+  * The floor the signing key must clear. Exported so the health check and the
+  * registration pre-check cannot drift from what `secret()` actually enforces.
+  */
+export const MIN_SECRET_KEY_CHARS = 32;
+
 export class AuthUnavailable extends Error {
   constructor() {
     super(
-      'CODELENS_SECRET_KEY is not set (needs 32+ characters), so sessions cannot be signed. ' +
-        'Refusing to issue unsigned tokens.',
+      `CODELENS_SECRET_KEY is not set (needs ${MIN_SECRET_KEY_CHARS}+ characters), so sessions cannot be signed. `
+        + 'Refusing to issue unsigned tokens.',
     );
     this.name = 'AuthUnavailable';
   }
@@ -41,8 +47,21 @@ export class AuthUnavailable extends Error {
 
 function secret(): Buffer {
   const s = process.env.CODELENS_SECRET_KEY;
-  if (!s || s.length < 32) throw new AuthUnavailable();
+  if (!s || s.length < MIN_SECRET_KEY_CHARS) throw new AuthUnavailable();
   return Buffer.from(s, 'utf8');
+}
+
+/**
+ * Throw now if a session could not be signed later.
+ *
+ * Registration commits the account and its first credit grant before issuing a
+ * session, so without this the one step that can fail on configuration ran
+ * last: the caller got a 503 while a working account and a 40-credit ledger row
+ * had already been written, and the retry they would naturally make came back
+ * "email taken". Checking first means nothing is written at all.
+ */
+export function assertAuthAvailable(): void {
+  secret();
 }
 
 /** `scrypt$N$r$p$salt$hash`, all base64url. The format carries its own parameters. */

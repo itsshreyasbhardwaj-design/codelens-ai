@@ -1,5 +1,7 @@
 import { NextResponse } from 'next/server';
-import { AuthUnavailable, EmailTaken, issueSession, register, SESSION_COOKIE } from '@codelens/engine/db/auth.ts';
+import {
+  assertAuthAvailable, AuthUnavailable, EmailTaken, issueSession, register, SESSION_COOKIE,
+} from '@codelens/engine/db/auth.ts';
 import { grantMonthlyAllowance } from '@codelens/engine/billing/credits.ts';
 import { db } from '../../../lib/store.ts';
 
@@ -15,6 +17,11 @@ export async function POST(request: Request): Promise<NextResponse> {
   }
 
   try {
+    // Before anything is written. Issuing the session is the only step here
+    // that can fail on configuration, and it used to run last — after the
+    // account and its credit grant were already committed.
+    assertAuthAvailable();
+
     const account = register(db(), {
       email: body.email,
       password: body.password,

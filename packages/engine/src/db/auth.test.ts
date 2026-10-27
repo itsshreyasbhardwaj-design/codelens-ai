@@ -2,8 +2,8 @@ import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { Db, NotFoundError } from './index.ts';
 import {
-  authenticate, AuthUnavailable, EmailTaken, hashPassword, issueSession,
-  membership, readSession, register, verifyPassword,
+  assertAuthAvailable, authenticate, AuthUnavailable, EmailTaken, hashPassword, issueSession,
+  membership, MIN_SECRET_KEY_CHARS, readSession, register, verifyPassword,
 } from './auth.ts';
 
 const KEY = 'test-secret-key-at-least-32-characters-long';
@@ -212,5 +212,37 @@ describe('tenant isolation with real accounts', () => {
     // ...but membership is re-checked per request, which is what the session
     // helper does before returning an organisation.
     assert.equal(membership(db, account.userId, account.organizationId), undefined);
+  });
+});
+
+describe('refusing to start what cannot be finished', () => {
+  it('reports sessions unavailable before any account is written', () => {
+    // The registration route commits the account and its first credit grant
+    // before it issues a session. Checking up front is what stops a missing
+    // key leaving a usable account behind a 503 — and a retry that then comes
+    // back "email taken".
+    const prior = process.env.CODELENS_SECRET_KEY;
+    delete process.env.CODELENS_SECRET_KEY;
+    try {
+      assert.throws(() => assertAuthAvailable(), AuthUnavailable);
+      process.env.CODELENS_SECRET_KEY = 'x'.repeat(MIN_SECRET_KEY_CHARS - 1);
+      assert.throws(() => assertAuthAvailable(), AuthUnavailable, 'a short key must be refused too');
+      process.env.CODELENS_SECRET_KEY = 'x'.repeat(MIN_SECRET_KEY_CHARS);
+      assert.doesNotThrow(() => assertAuthAvailable());
+    } finally {
+      if (prior === undefined) delete process.env.CODELENS_SECRET_KEY;
+      else process.env.CODELENS_SECRET_KEY = prior;
+    }
+  });
+
+  it('agrees with the floor the signing key actually enforces', () => {
+    const prior = process.env.CODELENS_SECRET_KEY;
+    process.env.CODELENS_SECRET_KEY = 'x'.repeat(MIN_SECRET_KEY_CHARS);
+    try {
+      assert.doesNotThrow(() => issueSession({ userId: 'u', organizationId: 'o', role: 'owner' }));
+    } finally {
+      if (prior === undefined) delete process.env.CODELENS_SECRET_KEY;
+      else process.env.CODELENS_SECRET_KEY = prior;
+    }
   });
 });
