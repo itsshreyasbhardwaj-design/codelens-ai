@@ -1,0 +1,37 @@
+# gitleaks allowlist — audited exceptions only.
+#
+# Every fingerprint below was inspected during an account-wide security audit
+# and confirmed to be a deliberate test fixture, an example in documentation,
+# a redaction/secret-scanning test's own input, or vendored upstream code.
+# None is a live credential.
+#
+# This file lists FINGERPRINTS, not paths or rules, on purpose: a fingerprint
+# pins one specific finding at one location. A NEW secret added to any of the
+# same files still fails the scan. Do not replace these with path globs.
+#
+# If a finding here ever turns out to be real, delete its line rather than
+# editing it, so the scanner reports it again.
+
+# fixtures/vulnerable-shop/.env  [generic-api-key]
+fixtures/vulnerable-shop/.env:generic-api-key:10
+
+# fixtures/vulnerable-shop/.env  [generic-api-key]
+fixtures/vulnerable-shop/.env:generic-api-key:12
+
+# fixtures/vulnerable-shop/.env  [generic-api-key]
+e53052886efa5533b85bcf67d1f623a76d41a257:fixtures/vulnerable-shop/.env:generic-api-key:10
+
+# fixtures/vulnerable-shop/.env  [generic-api-key]
+e53052886efa5533b85bcf67d1f623a76d41a257:fixtures/vulnerable-shop/.env:generic-api-key:12
+
+# packages/engine/src/billing/billing.test.ts  [generic-api-key]
+packages/engine/src/billing/billing.test.ts:generic-api-key:17
+
+# packages/engine/src/billing/billing.test.ts  [generic-api-key]
+a9fb8e833eee464a6d955f28825404a7e9025cdf:packages/engine/src/billing/billing.test.ts:generic-api-key:15
+
+# packages/engine/src/db/auth.test.ts  [generic-api-key]
+packages/engine/src/db/auth.test.ts:generic-api-key:9
+
+# packages/engine/src/db/auth.test.ts  [generic-api-key]
+ee3edf21a90c9e1fa33fd14b560d8c896f286ea7:packages/engine/src/db/auth.test.ts:generic-api-key:9
